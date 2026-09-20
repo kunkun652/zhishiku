@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>航空 CAE 知识工作台</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet" href="/assistant.css">
+  <script src="/vendor/occt-import-js.js"></script>
+</head>
+<body>
+  <aside>
+    <div class="brand"><span>飞</span><div><b>CAE 知识工作台</b><small>来源可追溯 · 本地演示</small></div></div>
+    <nav id="nav">
+      <button data-page="home" class="active">概览</button><button data-page="search">资料与依据</button>
+      <button data-page="cards">四类知识卡</button><button data-page="models">模型与案例</button>
+      <button data-page="graph">知识图谱</button><button data-page="package">任务知识包</button>
+      <button data-page="quality">导入与质量</button><button data-page="assistant">DSH 智能助手</button>
+    </nav>
+    <div class="scope">数据边界<br><b>D:\知识库 只读</b><br><b>D:\zhishiku 可写</b></div>
+  </aside>
+  <main><header><div><b id="pageTitle">概览</b><small>商飞场景目标 · 当前数据均标明真实来源属性</small></div><div id="status" class="status">正在检查…</div></header><section id="content"></section></main>
+  <dialog id="dialog"><button class="close" onclick="this.parentElement.close()">×</button><div id="dialogBody"></div></dialog>
+  <script type="module" src="/app.js"></script>
+</body></html>

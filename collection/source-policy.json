@@ -1,0 +1,59 @@
+{
+  "hosts": [
+    "commonresearchmodel.larc.nasa.gov",
+    "ntrs.nasa.gov",
+    "www.faa.gov",
+    "www1.grc.nasa.gov"
+  ],
+  "seeds": [
+    [
+      "飞机机身 Fuselage",
+      "https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/fuselage/"
+    ],
+    [
+      "飞机机翼 Wing",
+      "https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/wing/"
+    ],
+    [
+      "飞机部件 Parts of an Airplane",
+      "https://www1.grc.nasa.gov/beginners-guide-to-aeronautics/airplane-parts/"
+    ],
+    [
+      "机翼结构 Wing Structure",
+      "https://ntrs.nasa.gov/api/citations/19940021218/downloads/19940021218.pdf"
+    ],
+    [
+      "机身框结构分析 NASA TM102681",
+      "https://ntrs.nasa.gov/api/citations/19900016052/downloads/19900016052.pdf"
+    ],
+    [
+      "机身结构与框载荷分析 NASA 19760021133",
+      "https://ntrs.nasa.gov/api/citations/19760021133/downloads/19760021133.pdf"
+    ],
+    [
+      "FAA Aircraft Construction",
+      "https://www.faa.gov/sites/faa.gov/files/2022-03/pilot_handbook.pdf"
+    ],
+    [
+      "NASA CRM 有限元模型下载入口",
+      "https://commonresearchmodel.larc.nasa.gov/fem-file/"
+    ],
+    [
+      "NASA CRM 几何模型下载入口",
+      "https://commonresearchmodel.larc.nasa.gov/geometry/"
+    ],
+    [
+      "NASA CRM 翼盒有限元模型与说明",
+      "https://commonresearchmodel.larc.nasa.gov/fem-file/wingbox-fem-files/"
+    ],
+    [
+      "NASA 复合材料航空结构发展",
+      "https://ntrs.nasa.gov/api/citations/20190002561/downloads/20190002561.pdf"
+    ]
+  ],
+  "robots": true,
+  "max_pages": 40,
+  "max_file_bytes": 104857600,
+  "train": "unknown",
+  "tool_source": "https://github.com/scrapy/scrapy"
+}
