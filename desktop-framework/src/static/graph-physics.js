@@ -19,6 +19,8 @@ onmessage=({data})=>{
    .force('y',d3.forceY(n=>n.degree?0:n.anchorY).strength(n=>n.degree?.035:.03))
    .force('collide',d3.forceCollide(n=>n.degree?12:0).iterations(1));
   publish();timer=setInterval(()=>{simulation.tick();publish()},40);
+ }else if(data.type==='pause'){clearInterval(timer);timer=null;
+ }else if(data.type==='resume'){if(!timer&&simulation)timer=setInterval(()=>{simulation.tick();publish()},40);
  }else if(data.type==='drag'){
   const n=nodes[data.index];n.fx=data.x;n.fy=data.y;n.x=data.x;n.y=data.y;simulation.alpha(Math.max(simulation.alpha(),.18));publish();
  }else if(data.type==='release'){

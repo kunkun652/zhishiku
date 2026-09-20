@@ -1,16 +1,20 @@
+const defaults={enabled:true,rotate:true,stars:true,size:1,links:.25,bloom:.6,repel:45,distance:65,flatten:0};
+let preferences={...defaults};
+try{const p=JSON.parse(localStorage.getItem('zh-galaxy-settings')||'{}');for(const k of Object.keys(defaults))if(typeof p[k]===typeof defaults[k]&&(typeof p[k]!=='number'||Number.isFinite(p[k])))preferences[k]=p[k]}catch{}
 const saved={selected:null,transform:null,positions:new Map(),backend:'authority',pathEdges:[]};
 export function focusGraph(id,paths=[],backend='authority'){
  saved.selected=id;saved.pathEdges=paths.flat().map(e=>e.id);
  if(saved.backend!==backend){saved.positions.clear();saved.transform=null;}saved.backend=backend;
 }
 export async function mountGraph(host,{api,esc,showDetail,catalog,openSlices}){
- host.innerHTML=`<div class="live-graph"><div class="live-scene"><canvas id="graph-canvas" aria-label="全库知识图谱，可拖动节点、拖动空白平移、滚轮缩放" tabindex="0"></canvas><p id="g-status" role="status">正在加载全部知识与连接…</p><span class="graph-help">拖动节点 · 拖动空白平移 · 滚轮缩放 · 点击查看 · 双击打开原信息</span></div><section id="g-detail" class="live-details" hidden></section></div>`;
+ host.innerHTML=`<div class="live-graph"><div class="live-scene"><canvas id="graph-canvas" aria-label="全库知识图谱，可拖动节点、拖动空白平移、滚轮缩放" tabindex="0"></canvas><p id="g-status" role="status">正在加载全部知识与连接…</p><div class="galaxy-host" hidden></div><details class="graph-settings"><summary aria-label="图谱设置" title="图谱设置">⚙</summary><div class="graph-settings-body"><h3>Galaxy View</h3><label><input type="checkbox" data-setting="enabled"> 启用三维图谱</label><label><input type="checkbox" data-setting="rotate"> 自动旋转</label><label><input type="checkbox" data-setting="stars"> 星空背景</label><div id="galaxy-ranges"></div><button id="g-fit">适应窗口</button><button id="g-reset">恢复默认设置</button><p>三维：左键旋转 · 右键平移<br>二维：拖动节点或空白平移<br>滚轮缩放 · 点击查看 · 双击打开</p><p id="g-count"></p></div></details></div><section id="g-detail" class="live-details" hidden></section></div>`;
  const $=s=>host.querySelector(s),canvas=$('#graph-canvas'),ctx=canvas.getContext('2d'),panel=$('#g-detail');
  let alive=true,nodes=[],edges=[],byid=new Map(),adj=new Map(),snapshot='',request=0,selected=saved.selected,hover=null,gesture=null,frame=0,width=1,height=1,tree,autoFit=!saved.transform,ticks=0;
  let transform=saved.transform?{...saved.transform}:{x:0,y:0,k:1};
+ let galaxy=null,modeGeneration=0;
  const backend=saved.backend,paths=new Set(saved.pathEdges),worker=new Worker('/static/graph-physics.js');
  const label=type=>catalog.templates.find(t=>t.type===type)?.label||type;
- function schedule(){if(alive&&!frame)frame=requestAnimationFrame(draw)}
+ function schedule(){if(alive&&!galaxy&&!frame)frame=requestAnimationFrame(draw)}
  function fit(){
   if(!nodes.length)return;
   const [x0,x1]=d3.extent(nodes,n=>n.x),[y0,y1]=d3.extent(nodes,n=>n.y);
@@ -42,7 +46,7 @@ export async function mountGraph(host,{api,esc,showDetail,catalog,openSlices}){
   canvas.dataset.transform=JSON.stringify(transform);
  }
  function rebuildTree(){tree=d3.quadtree(nodes,n=>n.x,n=>n.y)}
- worker.onmessage=({data})=>{if(!alive)return;nodes.forEach((n,i)=>{if(gesture?.node===n&&gesture.moved)return;n.x=data[i*2];n.y=data[i*2+1]});ticks++;rebuildTree();if(autoFit)fit();if(ticks>90)autoFit=false;schedule()};
+ worker.onmessage=({data})=>{if(!alive||galaxy)return;nodes.forEach((n,i)=>{if(gesture?.node===n&&gesture.moved)return;n.x=data[i*2];n.y=data[i*2+1]});ticks++;rebuildTree();if(autoFit)fit();if(ticks>90)autoFit=false;schedule()};
  worker.onerror=()=>{$('#g-status').textContent='动态布局加载失败，请重新进入图谱。'};
  function local(event){const r=canvas.getBoundingClientRect();return [event.clientX-r.left,event.clientY-r.top]}
  function hit(x,y){return tree?.find((x-transform.x)/transform.k,(y-transform.y)/transform.k,9/transform.k)}
@@ -61,9 +65,9 @@ export async function mountGraph(host,{api,esc,showDetail,catalog,openSlices}){
  canvas.ondblclick=e=>{const n=hit(...local(e));if(n)showDetail(n.id)};
  canvas.onwheel=e=>{e.preventDefault();autoFit=false;const [x,y]=local(e),old=transform.k,k=Math.max(.025,Math.min(10,old*Math.exp(-e.deltaY*.0015)));transform={k,x:x-(x-transform.x)*k/old,y:y-(y-transform.y)*k/old};schedule()};
  canvas.onkeydown=e=>{if(e.key==='Escape')closeDetail()};
- function closeDetail(){++request;selected=saved.selected=null;panel.hidden=true;schedule()}
+ function closeDetail(){++request;selected=saved.selected=null;panel.hidden=true;galaxy?.select(null);schedule()}
  async function detail(oid){
-  const token=++request;selected=saved.selected=oid;hover=null;autoFit=false;panel.hidden=false;panel.innerHTML='<p>正在读取原信息与连接…</p>';worker.postMessage({type:'wake'});schedule();
+  const token=++request;selected=saved.selected=oid;galaxy?.select(oid);hover=null;autoFit=false;panel.hidden=false;panel.innerHTML='<p>正在读取原信息与连接…</p>';if(!galaxy)worker.postMessage({type:'wake'});schedule();
   try{
    const params={backend,snapshot,limit:100};const g=await api('/api/graph-node/'+encodeURIComponent(oid)+'?'+new URLSearchParams(params));if(!alive||token!==request)return;
    const relations=[...g.relations];for(let offset=relations.length;offset<g.total;offset+=100){const page=await api('/api/graph-node/'+encodeURIComponent(oid)+'?'+new URLSearchParams({...params,offset}));if(!alive||token!==request)return;relations.push(...page.relations);Object.assign(g.neighbors,page.neighbors)}
@@ -72,16 +76,36 @@ export async function mountGraph(host,{api,esc,showDetail,catalog,openSlices}){
    panel.querySelector('.graph-close').onclick=closeDetail;$('#g-open').onclick=()=>showDetail(oid);$('#g-slices').onclick=()=>openSlices(oid);panel.querySelectorAll('[data-neighbor]').forEach(b=>b.onclick=()=>detail(b.dataset.neighbor));
   }catch(e){if(alive&&token===request){panel.innerHTML=`<button class="graph-close" aria-label="关闭详情">×</button><p>${esc(e.message)}</p>`;panel.querySelector('.graph-close').onclick=closeDetail}}
  }
+ function persist(){try{localStorage.setItem('zh-galaxy-settings',JSON.stringify(preferences))}catch{}}
+ const ranges=[['size','节点大小',.3,3,.1],['links','连线亮度',0,1,.05],['bloom','辉光强度',0,2,.1],['repel','节点斥力',5,150,5],['distance','连线距离',20,200,5],['flatten','扁平程度',0,1,.05]];
+ for(const [key,title,min,max,step] of ranges){preferences[key]=Math.max(min,Math.min(max,preferences[key]));$('#galaxy-ranges').insertAdjacentHTML('beforeend',`<label>${title}<input type="range" data-setting="${key}" min="${min}" max="${max}" step="${step}"><output data-value="${key}"></output></label>`)}
+ function syncSettings(){host.querySelectorAll('[data-setting]').forEach(input=>{const k=input.dataset.setting;if(input.type==='checkbox')input.checked=preferences[k];else{input.value=preferences[k];host.querySelector(`[data-value="${k}"]`).textContent=preferences[k]}input.disabled=k!=='enabled'&&!preferences.enabled})}
+ syncSettings();
+ host.querySelectorAll('[data-setting]').forEach(input=>input.oninput=()=>{const key=input.dataset.setting;preferences[key]=input.type==='checkbox'?input.checked:Number(input.value);persist();syncSettings();if(key==='enabled')switchMode();else galaxy?.apply()});
+ $('#g-fit').onclick=()=>{if(galaxy)galaxy.fit();else{fit();schedule()}};
+ $('#g-reset').onclick=()=>{Object.assign(preferences,defaults);persist();syncSettings();if(galaxy){galaxy.apply();galaxy.fit()}else switchMode()};
+ function start2D(){worker.postMessage({type:'init',nodes:nodes.map(({id,x,y,degree})=>({id,x,y,degree})),edges:edges.map(e=>({source:e.source.id,target:e.target.id}))})}
+ async function switchMode(){
+  const generation=++modeGeneration;
+  galaxy?.dispose();galaxy=null;$('.galaxy-host').hidden=true;canvas.hidden=false;
+  if(!preferences.enabled){worker.postMessage({type:'resume'});schedule();return}
+  try{const {mountGalaxy}=await import('/static/galaxy-workspace.js');if(!alive||generation!==modeGeneration)return;
+   $('.galaxy-host').hidden=false;
+   galaxy=mountGalaxy($('.galaxy-host'),{nodes,edges,settings:preferences,selected,paths,onSelect:id=>id?detail(id):closeDetail(),onOpen:showDetail,onError:message=>{$('#g-status').hidden=false;$('#g-status').textContent=message}});
+   canvas.hidden=true;worker.postMessage({type:'pause'});cancelAnimationFrame(frame);frame=0;
+  }catch(e){if(!alive||generation!==modeGeneration)return;$('.galaxy-host').hidden=true;$('.galaxy-host').replaceChildren();canvas.hidden=false;worker.postMessage({type:'resume'});$('#g-status').hidden=false;$('#g-status').textContent='三维组件加载失败，已显示二维图谱：'+e.message;schedule()}
+ }
  const resize=new ResizeObserver(()=>{width=canvas.clientWidth;height=canvas.clientHeight;const dpr=Math.min(2,window.devicePixelRatio||1);canvas.width=Math.round(width*dpr);canvas.height=Math.round(height*dpr);ctx.setTransform(dpr,0,0,dpr,0,0);if(autoFit)fit();schedule()});resize.observe(canvas);
  try{
   const g=await api('/api/graph?'+new URLSearchParams({full:true,backend}));if(!host.isConnected){dispose();return dispose}snapshot=g.snapshot;
   nodes=g.nodes.map((n,index)=>{const p=saved.positions.get(n.id),a=Math.random()*Math.PI*2,r=Math.sqrt(Math.random())*Math.sqrt(g.nodes.length)*8;return {...n,index,x:p?.x??Math.cos(a)*r,y:p?.y??Math.sin(a)*r,degree:0}});byid=new Map(nodes.map(n=>[n.id,n]));adj=new Map(nodes.map(n=>[n.id,new Set()]));
   edges=g.edges.map(e=>({...e,source:byid.get(e.source),target:byid.get(e.target)}));for(const e of edges){e.source.degree++;e.target.degree++;adj.get(e.source.id).add(e.target.id);adj.get(e.target.id).add(e.source.id)}
   canvas.dataset.nodes=nodes.length;canvas.dataset.edges=edges.length;rebuildTree();if(autoFit)fit();schedule();
-  $('#g-status').textContent=`全部 ${nodes.length.toLocaleString()} 个对象 · ${edges.length.toLocaleString()} 条连接${g.invalid_edges?' · '+g.invalid_edges+' 条连接端点缺失':''}`;$('#g-status').title=`${g.isolated_nodes} 个对象尚未登记连接；显示已有真实关系。`;
-  worker.postMessage({type:'init',nodes:nodes.map(({id,x,y,degree})=>({id,x,y,degree})),edges:g.edges.map(({source,target})=>({source,target}))});if(selected&&byid.has(selected))detail(selected);
+  $('#g-count').textContent=`全部 ${nodes.length.toLocaleString()} 个对象 · ${edges.length.toLocaleString()} 条连接${g.invalid_edges?' · '+g.invalid_edges+' 条连接端点缺失':''}`;$('#g-count').title=`${g.isolated_nodes} 个对象尚未登记连接；显示已有真实关系。`;
+  $('#g-status').hidden=nodes.length>0;$('#g-status').textContent=nodes.length?'':'知识库暂无对象，添加知识后在这里查看连接。';
+  start2D();await switchMode();if(selected&&byid.has(selected))detail(selected);
  }catch(e){if(alive)$('#g-status').textContent='加载失败：'+e.message}
- function dispose(){alive=false;++request;worker.terminate();resize.disconnect();cancelAnimationFrame(frame);saved.transform={...transform};saved.positions=new Map(nodes.map(n=>[n.id,{x:n.x,y:n.y}]));}
+ function dispose(){alive=false;++modeGeneration;galaxy?.dispose();++request;worker.terminate();resize.disconnect();cancelAnimationFrame(frame);saved.transform={...transform};saved.positions=new Map(nodes.map(n=>[n.id,{x:n.x,y:n.y}]));}
  return dispose;
 }
 
