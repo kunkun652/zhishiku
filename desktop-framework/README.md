@@ -6,7 +6,7 @@
 
 直接运行 `release\知衡仿真知识库\知衡仿真知识库.exe`。也可使用 D:\zhishiku 下的“知衡仿真知识库”快捷方式。保留整个程序文件夹，不要只移动 EXE。
 
-本轮依据《仿真知识库架构.pdf》11页实现独立空资料框架。原知识库 EXE 已复制到 baseline，开发复用其 pywebview + FastAPI 桌面方式、Three.js / OCCT 查看器和本地前端依赖。原库的历史数据库、资料、切片、配置和凭据未复制进新产品。旧 D:\zhishiku 演示保留。未启动、连接或修改 D:\CAE-AGENT-DSH。
+本框架最初依据已归档的设计资料建立。开发复用 pywebview + FastAPI 桌面方式、Three.js / OCCT 查看器和本地前端依赖；设计原件可从 Git 历史追溯。原知识库的历史数据库、配置和凭据未复制进新产品。
 
 ## 已实现
 
@@ -49,4 +49,4 @@
 
 源码在 src，测试在 tests。build.ps1 使用原平台Python环境只读打包，不安装或修改原环境；正式程序已包含Python与依赖，无需该环境。Semantica使用独立Python 3.12组件，build-semantic.ps1 为重建命令。重建顺序为 Semantica、桌面程序。许可证随程序保存。
 
-统一接口详见 `接口与架构映射.md`；测试证据见 evidence。旧演示的启动知识库.ps1仍属于旧演示，本版本请从新EXE或专用快捷方式启动。
+统一接口详见 `接口与架构映射.md`；测试证据见 evidence。本版本请从正式 EXE 或专用快捷方式启动。
