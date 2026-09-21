@@ -7,7 +7,7 @@ stats=a['collection'];counts=a['health']['counts']
 lines=['# 本次资料收集与知识构建报告','', '日期：2026-09-20。实际 EXE 已更新，原数据目录保留，旧程序文件见 desktop-framework/backups/pre-collection-20260920。','',
 '## 实际结果','',f'- 处理文档及工程资产路径 {imp["processed"]:,} 个；本轮重复内容 {imp["counts"].get("duplicate",0):,} 个。',f'- 去重原件 {stats["sources"]:,} 份；正文片段 {stats["chunks"]:,} 个；有文字页/表 {stats["indexed_pages"]:,} / {stats["pages"]:,}。',f'- 术语卡 {counts.get("term",0)}、材料卡 {counts.get("material",0)}、网格策略卡 {counts.get("mesh",0)}、工况卡 {counts.get("condition",0)}。',f'- 模型/输入/结果资产 {counts.get("model",0):,} 个；候选案例 {counts.get("case",0):,} 个；任务定义 {counts.get("task",0):,} 个。',f'- Scrapy 实际成功采集 {len(public)} 个不同公开URL，原始响应与哈希已保存。',f'- 重新计算校验了 {a["managed_files_verified"]:,} 份受管文件的 SHA-256，共 {a["managed_bytes"]/1024**3:.2f} GiB，差异 {len(a["hash_errors"])}。','',
 '## 怎么使用','', '1. 双击 D:\\zhishiku\\新版知衡知识库.lnk，进入“资料与检索”。','2. 输入“什么是飞机机身”“机翼是什么意思”或“机身框静强度仿真”。','3. 查看定义、完整卡片和正文命中，点页码打开原件。','4. 模型搜索 frame 或 wingbox，查看记录后点击预览；支持旋转、缩放和线框。','5. “导入与质量”可查看解析缺口并下载卡片/案例/任务 JSONL；16类模板仍可新建和编辑。','',
-'分类目录：../资料分类目录/打开分类目录.html。完整接口与格式说明：接口与数据说明.md。继续采集脚本：../继续采集与入库.ps1。','',
+'分类目录：../资料分类目录/打开分类目录.html。完整接口与格式说明：接口与数据说明.md。继续采集按接口说明依次运行 collection 中的采集与入库脚本。','',
 '## 真实 EXE 检索测试','', '| 问题 | 命中数 | 耗时（秒） | 首条 |','|---|---:|---:|---|']
 for q,r in a['queries'].items():lines.append(f'| {q} | {r["total"]} | {r["seconds"]} | {r["top"][0]["title"]} |')
 lines+=['','无关问题返回未命中；正文引用可打开实际原件。真实 wingbox BDF 解析结果：'+str(a['mesh'])+'。','自动检查：原有13项回归与新增4项采集检索回归通过。浏览器显示检查单独记录于 browser-acceptance.json。','', '## 未闭合项（不算完成）','', '| 状态 | 数量 |','|---|---:|']
