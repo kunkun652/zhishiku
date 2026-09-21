@@ -26,6 +26,20 @@
 
 ## 使用说明
 
+### 没有 EXE？从源码启动（Windows）
+
+先安装 **Python 3.11 x64、Node.js 22/24（含 npm）、Microsoft Edge WebView2 Runtime**。下载并解压仓库，在包含本 README 的目录中打开 PowerShell：
+
+```powershell
+# 首次安装：独立 Python 环境 + 固定版本前端资源 + 基础自检
+powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop-framework\setup-dev.ps1
+
+# 每次启动：打开知衡桌面窗口，关闭窗口即可退出
+powershell -NoProfile -ExecutionPolicy Bypass -File .\desktop-framework\start-dev.ps1
+```
+
+完整操作、软件下载入口、数据目录、模型配置和故障排查见 **[开发者安装与启动说明](desktop-framework/DEVELOPING.md)**。首次是空白知识库；基础安装不下载向量/LLM 权重，不包含作者的资料。可选 AI 组件需另外配置，不影响先启动基础桌面。
+
 完整功能手册：[`知衡知识库 EXE 功能与 Agent 仿真使用指南`](知衡知识库EXE功能与Agent仿真使用指南.md)。按每个界面模块说明用途、操作方式、对人的帮助、对仿真 Agent 的帮助，以及引用、权限和增量更新的实际边界。
 
 本仓库目前提供源码，不包含知识库业务数据、模型权重、原始资料或已经打包的 Windows 程序。开发和构建说明见 [`desktop-framework/README.md`](desktop-framework/README.md)，采集与入库格式见 [`collection/接口与数据说明.md`](collection/接口与数据说明.md)。

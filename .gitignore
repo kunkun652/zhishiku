@@ -1,6 +1,7 @@
 # Installed third-party dependencies and copied upstream repositories
 node_modules/
 .venv/
+.venv-*/
 venv/
 env/
 /semantica/

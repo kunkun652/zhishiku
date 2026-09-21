@@ -1,0 +1,12 @@
+# Direct dependencies for the Windows source desktop (Python 3.11 x64).
+# Install requirements-desktop-lock.txt for the tested full resolution.
+fastapi==0.141.1
+uvicorn==0.52.4
+pywebview==6.2.1
+python-multipart==0.0.32
+httpx==0.28.1
+pypdf==5.9.0
+PyMuPDF==1.28.2
+pyNastran==1.4.1
+meshio==5.3.5
+numpy==1.26.4

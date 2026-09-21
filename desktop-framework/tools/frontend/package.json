@@ -1,0 +1,11 @@
+{
+  "name": "zhiheng-desktop-assets",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Pinned local browser assets for the source desktop",
+  "dependencies": {
+    "three": "0.180.0",
+    "occt-import-js": "0.0.23",
+    "d3": "7.9.0"
+  }
+}
