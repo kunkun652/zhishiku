@@ -10,6 +10,8 @@ import threading
 import time
 from .contracts import VERSION, dumps
 
+ACTIONS = frozenset({'extract', 'conflicts', 'answer', 'probe'})
+
 
 class Runtime:
     def __init__(self, root: Path):
@@ -31,6 +33,7 @@ class Runtime:
                     process.wait(timeout=5)
                 except subprocess.TimeoutExpired:
                     process.kill()
+                    process.wait(timeout=5)
 
     def command(self) -> list[str] | None:
         base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parents[3]
@@ -47,20 +50,27 @@ class Runtime:
         last = self.last
         if last.get("status") == "ready" and time.monotonic() - self.probed_at > 300:
             last = {**last, "status": "probe_expired"}
-        return {"configured": bool(self.command()) and bool(os.environ.get("ZH_PIPELINE_MODEL")),
-                "worker_installed": bool(self.command()), "last_probe": last,
-                "model": os.environ.get("ZH_PIPELINE_MODEL", ""),
+        command = self.command()
+        return {"configured": not self.closed and bool(command) and bool(os.environ.get("ZH_PIPELINE_MODEL")),
+                "worker_installed": bool(command), "last_probe": last,
+                "closed": self.closed, "model": os.environ.get("ZH_PIPELINE_MODEL", ""),
                 "remote_inference": False}
 
     def call(self, action: str, body: dict) -> dict:
+        if action not in ACTIONS or not isinstance(body, dict) or 'action' in body:
+            raise ValueError("不支持的 worker 操作或保留字段 action 被覆盖")
+        if self.closed:
+            raise RuntimeError("知识运行时已关闭")
         command = self.command()
         if not command:
             raise RuntimeError("Semantica 知识处理运行时未安装；请配置 ZH_PIPELINE_PYTHON 或打包 knowledge-runtime")
         if not self.lock.acquire(blocking=False):
             raise RuntimeError("知识模型正在处理另一请求，请稍后重试")
-        work = self.root / "pipeline-runtime"
-        work.mkdir(parents=True, exist_ok=True)
+        # All operations after acquiring the lock must be inside try/finally,
+        # including mkdir: permission/disk errors must not permanently lock it.
         try:
+            work = self.root / "pipeline-runtime"
+            work.mkdir(parents=True, exist_ok=True)
             with tempfile.TemporaryDirectory(prefix="request-", dir=work) as temp:
                 source, target = Path(temp) / "input.json", Path(temp) / "output.json"
                 payload = dumps({"action": action, **body})
