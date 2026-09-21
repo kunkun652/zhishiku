@@ -1,0 +1,34 @@
+name: Knowledge pipeline contracts
+on:
+  pull_request:
+    paths:
+      - 'desktop-framework/**'
+      - '.github/workflows/knowledge-pipeline.yml'
+  push:
+    branches: ['feat/knowledge-pipeline-agent']
+permissions:
+  contents: read
+jobs:
+  contracts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.11'
+      - name: Install test dependencies, no model downloads
+        run: python -m pip install fastapi==0.128.2 pydantic==2.13.4 httpx==0.28.1 python-multipart==0.0.29 pypdf==5.9.0 numpy meshio pyNastran
+      - name: Production data and retrieval contracts with model fixtures
+        run: python desktop-framework/tests/test_knowledge_pipeline.py
+      - name: Production app HTTP integration with model fixture
+        run: python desktop-framework/tests/test_pipeline_main_integration.py
+      - name: Original framework regression in a fresh process
+        run: python desktop-framework/tests/test_framework.py
+      - name: Compile backend and check workspace JavaScript
+        run: |
+          python -m compileall -q desktop-framework/src
+          python -c "from pathlib import Path; import re; p=Path('desktop-framework/src/static/knowledge-pipeline.html'); Path('/tmp/pipeline-ui.js').write_text(re.search(r'<script>(.*?)</script>', p.read_text(), re.S).group(1))"
+          node --check /tmp/pipeline-ui.js

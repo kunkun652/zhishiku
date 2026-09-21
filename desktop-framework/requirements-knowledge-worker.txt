@@ -1,0 +1,3 @@
+# Dedicated environment; do not upgrade the existing desktop/BGE-M3/graph environments.
+# Source pinned. Build captures the actual transitive resolution using pip freeze.
+semantica[llm-ollama] @ git+https://github.com/semantica-agi/semantica.git@92c2578a142a3b1e6139e6ea69fea39601a212e6

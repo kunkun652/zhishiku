@@ -1,4 +1,4 @@
-"""Derived from original CAE desktop.py: loopback FastAPI + pywebview lifecycle."""
+"""Loopback FastAPI + pywebview lifecycle; includes the knowledge pipeline."""
 import os,sys,socket,threading,time,json,urllib.request
 from pathlib import Path
 
@@ -8,7 +8,7 @@ def main():
     os.environ['ZH_DATA_ROOT']=str(data)
     log=open(data/'desktop.log','a',encoding='utf-8',buffering=1); sys.stdout=log; sys.stderr=log
     import uvicorn
-    from app.main import app
+    from app.service import app
     sock=socket.socket(); sock.bind(('127.0.0.1',0)); sock.listen(128)
     port=sock.getsockname()[1]
     server=uvicorn.Server(uvicorn.Config(app,log_level='warning',access_log=False))

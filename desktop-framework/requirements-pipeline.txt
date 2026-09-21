@@ -1,0 +1,2 @@
+# Additional dependency for the desktop environment, not the knowledge model worker.
+pypdf==5.9.0
