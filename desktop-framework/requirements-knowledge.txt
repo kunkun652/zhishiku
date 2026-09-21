@@ -1,0 +1,4 @@
+# Isolated worker only. Exact Semantica source; transitive dependencies are NOT a lockfile.
+# Do not install in the existing CAD/mesh/embedding environment (NumPy version boundaries).
+semantica[llm-ollama] @ git+https://github.com/semantica-agi/semantica.git@92c2578a142a3b1e6139e6ea69fea39601a212e6
+pyinstaller>=6,<7

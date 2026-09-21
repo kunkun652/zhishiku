@@ -1,0 +1,13 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>知识处理与问答 · 知衡</title><link rel="stylesheet" href="/static/pipeline.css"></head>
+<body>
+<header><a href="/">← 返回知识库 / 三维图谱</a><h1>知识处理与问答</h1><p>原件 → Semantica 抽取 → 候选审核 → 三路检索 → 有据回答</p></header>
+<main>
+<section><div class="heading"><h2>运行状态</h2><button id="probe">检查组件与模型</button></div><p>状态来自当前程序。仅检查已登记资产，不扫描或修改 D:\知识库 中的原始资料。</p><pre id="status" role="status">正在读取…</pre></section>
+<section><h2>1. 选择资料并抽取</h2><p>支持文字型 PDF、DOCX、TXT、MD、BDF、NAS，每份不超过 20 MiB。BDF 首版抽取卡片/术语名称，不解析数值或认定有效载荷工况。</p><label>上传并登记原件 <input id="file" type="file" accept=".pdf,.docx,.txt,.md,.bdf,.nas"></label><button id="upload">登记原件</button><label>已登记资料 <select id="files"></select></label><button id="more-files">读取下一页资料</button><label>抽取模式 <select id="mode"><option value="regex">Semantica 规则抽取（无需问答模型）</option><option value="llm">Semantica 本地大模型实体/关系抽取</option></select></label><button id="start">开始处理 / 重试</button><pre id="job" role="status">尚未启动任务。</pre></section>
+<section><h2>2. 候选审核</h2><p>采纳仅表示已核对原文，不表示通过工程验收。名称相同不会自动合并；未采纳的抽取结果不写入正式对象表。</p><label>审核人 <input id="reviewer" autocomplete="name" maxlength="100"></label><label>审核 / 撤销说明 <input id="note" maxlength="4000"></label><label>数值差异的工况核对说明 <input id="conflict-note" maxlength="4000" placeholder="仅发现差异时需要填写；不能用此项绕过单位错误"></label><div class="actions"><button id="accept">采纳勾选项</button><button id="reject">拒绝勾选项</button><button id="revoke">撤销已采纳项</button><button id="reload-candidates">刷新候选</button><button id="next-candidates">下一页候选</button></div><p id="candidate-count"></p><div id="candidates"></div></section>
+<section><h2>3. 更新检索索引</h2><p>原文已进入 FTS5；采纳后的实体进入主库。此处重建 Semantica 派生图并续建现有 BGE-M3 v2 索引；全部检查通过后才能启用。</p><div class="actions"><button id="refresh-index">更新图谱与向量索引</button><button id="check-index">查看索引进度</button><button id="activate-index">校验并启用完整索引</button></div><pre id="indexes">尚未检查。</pre></section>
+<section><h2>4. 检索与 Agent 问答</h2><label>问题 <textarea id="query" rows="3" maxlength="2000" placeholder="例如：有哪些采用 CTETRA 的机翼分析资料？"></textarea></label><div class="actions"><button id="retrieve">仅查看三路检索证据</button><button id="ask">让只读 Agent 回答</button></div><p>本地模型未配置时仅返回证据，不伪装成生成式回答。不运行求解器，不自动修改工程参数。</p><div id="answer" aria-live="polite"></div><details><summary>检索来源、冲突与运行记录</summary><pre id="trace"></pre></details></section>
+</main><div id="message" role="alert"></div><script type="module" src="/static/pipeline.js"></script>
+</body></html>
