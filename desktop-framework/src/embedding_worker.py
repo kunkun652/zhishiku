@@ -132,36 +132,42 @@ def main():
   threading.Thread(target=parent_watch,daemon=True).start()
  engine=Engine(args.data,args.model)
  from index_v2 import make_engine
- v2=make_engine(Engine,ENCODING)(args.data,args.model)
+ from index_generations import Generations
+ generations=Generations(Path(args.data),args.model,make_engine(Engine,ENCODING))
  def active():
   manifest=Path(args.data)/'active-index.json'
-  if manifest.exists() and json.loads(manifest.read_text('utf-8')).get('version')==2:return v2
+  if manifest.exists() and json.loads(manifest.read_text('utf-8')).get('version')==2:return generations.active()
   return engine
  class Handler(BaseHTTPRequestHandler):
   def log_message(self,*args):pass
   def do_POST(self):
    try:
     if self.headers.get('Origin'):raise ValueError('只接受本机程序调用')
+    if args.token and self.headers.get('Authorization')!='Bearer '+args.token:raise ValueError('Invalid worker credential')
     body=json.loads(self.rfile.read(int(self.headers.get('Content-Length','0'))) or '{}')
     if self.path=='/status':result=active().status()
-    elif self.path=='/v2/status':result=v2.status()
+    elif self.path=='/v2/status':result=generations.candidate().status()
     elif self.path=='/v2/build':
      if engine.building:raise ValueError('旧索引正在构建；请等待完成后启动新索引')
-     with v2.lock:
-      if not v2.building:
-       v2.stop_requested=False;v2.pilot_limit=body.get('pilot_limit');v2.building=True;threading.Thread(target=v2.build,daemon=True).start()
+     # Serialize choosing a build target with publication: the target must not
+     # become active between prepare() and setting its building flag.
+     with generations.lock:
+      v2=generations.prepare()
+      with v2.lock:
+       if not v2.building:
+        v2.stop_requested=False;v2.pilot_limit=body.get('pilot_limit');v2.building=True;threading.Thread(target=v2.build,daemon=True).start()
      result=v2.status()
-    elif self.path=='/v2/stop':v2.stop_requested=True;result=v2.status()
+    elif self.path=='/v2/stop':
+     v2=generations.candidate();v2.stop_requested=True;result=v2.status()
     elif self.path=='/v2/activate':
-     if v2.status()['status']!='ready':raise ValueError('新索引未完成一致性检查，不允许切换')
-     temp=Path(args.data)/'active-index.tmp';temp.write_text(json.dumps({'version':2,'encoding':v2.signature}),'utf-8');os.replace(temp,Path(args.data)/'active-index.json');result=v2.status()
+     result=generations.activate()
     elif self.path=='/build':
      with engine.lock:
       if not engine.building:
        engine.building=True;threading.Thread(target=engine.build,daemon=True).start()
      result=engine.status()
     elif self.path=='/search':
-     v2.foreground+=1
+     v2=generations.candidate();v2.foreground+=1
      try:result=active().search(body['query'],body['eligible'])
      finally:v2.foreground-=1
     else:raise ValueError('Unknown endpoint')

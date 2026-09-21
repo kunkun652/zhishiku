@@ -4,8 +4,8 @@ from token_chunks import split,RULE
 
 def make_engine(base_class,encoding):
  class TokenEngine(base_class):
-  def __init__(self,root,model):
-   super().__init__(root,model,'vectors-v2.sqlite3',{**encoding,'chunk_rule':RULE})
+  def __init__(self,root,model,index_name='vectors-v2.sqlite3'):
+   super().__init__(root,model,index_name,{**encoding,'chunk_rule':RULE})
    with self.db() as c:
     c.executescript('CREATE TABLE IF NOT EXISTS units(key TEXT PRIMARY KEY,parent TEXT,object_id TEXT,file_id TEXT,file_hash TEXT,page INTEGER,start INTEGER,end INTEGER,text TEXT,tokens INTEGER,overlap_chars INTEGER,content_hash TEXT,parent_hash TEXT,rule TEXT,object_hash TEXT);')
    self.tokenizer_hash=hashlib.sha256((self.model_path/'tokenizer.json').read_bytes()).hexdigest()
@@ -22,7 +22,7 @@ def make_engine(base_class,encoding):
    return self.split_tokenizer
   def rows(self):
    tokenizer=self.splitter();count=0
-   with self.source() as source:
+   with self.source() as source,self.db() as previous:
     source.execute('BEGIN')
     self.parents_total=source.execute('SELECT COUNT(*) FROM objects').fetchone()[0]+source.execute('SELECT COUNT(*) FROM chunks').fetchone()[0]
     self.source_revision=source.execute("SELECT value FROM meta WHERE key='revision'").fetchone()[0]
@@ -32,6 +32,17 @@ def make_engine(base_class,encoding):
       if self.stop_requested:return
       self.parents_processed+=1
       parent_hash=hashlib.sha256(row['text'].encode()).hexdigest()
+      # Reuse existing tokenizer spans when the parent text is unchanged. A title,
+      # category or object-version change does not require re-encoding its body.
+      saved=previous.execute('SELECT * FROM units WHERE parent=? AND parent_hash=? ORDER BY start',(row['parent'],parent_hash)).fetchall()
+      if saved and saved[0][6]==0 and saved[-1][7]>=len(row['text']):
+       for old in saved:
+        unit=list(old);unit[2]=row['object_id'];unit[3]=row['file_id'];unit[4]=row['file_hash'];unit[5]=row['page'];unit[14]=row['object_hash']
+        self.pending_units[unit[0]]=tuple(unit)
+        yield (unit[0],row['object_id'],row['object_hash'],unit[11],row['file_id'],row['page'],unit[8])
+        count+=1
+        if self.pilot_limit and count>=self.pilot_limit:return
+       continue
       for unit in split(row['text'],tokenizer):
        key=f"v2:{row['parent']}:{unit['start']}:{unit['end']}:{unit['content_hash'][:16]}"
        self.pending_units[key]=(key,row['parent'],row['object_id'],row['file_id'],row['file_hash'],row['page'],unit['start'],unit['end'],unit['text'],unit['tokens'],unit['overlap_chars'],unit['content_hash'],parent_hash,RULE,row['object_hash'])
@@ -41,6 +52,7 @@ def make_engine(base_class,encoding):
   def build(self):
    self.error='';seen=set();self.parents_processed=0
    try:
+    with self.db() as c:c.execute('CREATE INDEX IF NOT EXISTS units_parent ON units(parent)')
     with self.db() as c:known={r[0]:(r[1],r[2],r[3],r[4]) for r in c.execute('SELECT v.key,v.object_hash,v.text_hash,u.file_hash,u.parent_hash FROM vectors v LEFT JOIN units u ON u.key=v.key')}
     batch=[]
     def flush():
@@ -55,6 +67,11 @@ def make_engine(base_class,encoding):
     for r in self.rows():
      seen.add(r[0])
      if known.get(r[0])==(r[2],r[3],self.pending_units[r[0]][4],self.pending_units[r[0]][12]):self.pending_units.pop(r[0],None);continue
+     if r[0] in known and known[r[0]][1]==r[3]:
+      with self.db() as c:
+       c.execute('INSERT OR REPLACE INTO units VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)',self.pending_units.pop(r[0]))
+       c.execute('UPDATE vectors SET object_id=?,object_hash=?,file_id=?,page=? WHERE key=?',(r[1],r[2],r[4],r[5],r[0]))
+      continue
      batch.append(r)
      if len(batch)>=24:flush()
     if batch:flush()

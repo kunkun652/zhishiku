@@ -5,7 +5,7 @@ from contextlib import asynccontextmanager
 import json
 import threading
 from fastapi import HTTPException, UploadFile, File
-from fastapi.responses import FileResponse
+from fastapi.responses import RedirectResponse
 from starlette.concurrency import run_in_threadpool
 from .evidence import EvidenceService
 from .parsers import MAX_BYTES
@@ -71,6 +71,22 @@ def install(core, runtime=None):
     def submit_file(file_id: str):
         return invoke(pipeline.submit_file, file_id)
 
+    @app.post('/api/assistant/ingest')
+    async def managed_upload(file: UploadFile = File(...)):
+        raw = await file.read(MAX_BYTES + 1)
+        job = await run_in_threadpool(invoke, pipeline.import_bytes, raw, file.filename or 'asset.txt')
+        return invoke(pipeline.manage, job['id'])
+
+    @app.post('/api/assistant/files/{file_id}/process')
+    def managed_file(file_id: str):
+        job = invoke(pipeline.submit_file, file_id)
+        return invoke(pipeline.manage, job['id'])
+
+    @app.get('/api/assistant/jobs')
+    def managed_jobs():
+        with core.connect() as c:
+            return {'items': [dict(r) for r in c.execute('SELECT * FROM kp_managed_jobs ORDER BY updated DESC LIMIT 100')]}
+
     @app.post('/api/pipeline/jobs/{job_id}/run', status_code=202)
     def run(job_id: str):
         return invoke(pipeline.queue, job_id)
@@ -101,11 +117,14 @@ def install(core, runtime=None):
             result = dict(row)
             result["evidence_pack"] = json.loads(result["evidence_pack"])
             result["result"] = json.loads(result["result"])
+            result['source_state'] = 'current' if all(evidence._valid_provenance(e, c)
+                for e in result['evidence_pack'].get('evidence', [])) else 'stale'
+            result['history_note'] = '保留当时证据快照；来源变化后不得视作当前有效结论'
             return result
 
     @app.get('/knowledge-pipeline')
     def workspace():
-        return FileResponse(core.STATIC / 'knowledge-pipeline.html')
+        return RedirectResponse('/#home')
 
     previous_health = core.health
     app.router.routes[:] = [r for r in app.router.routes if getattr(r, "path", None) != '/api/health']
@@ -113,7 +132,7 @@ def install(core, runtime=None):
     def health():
         info = previous_health()
         state = pipeline.runtime.status()
-        return {**info, "build": "1.4.0-knowledge-pipeline", "agent_path_wired": True,
+        return {**info, "build": "1.6.0-trusted-workbench", "agent_path_wired": True,
                 "agent_connected": state.get("last_probe", {}).get("status") == "ready",
                 "agent_runtime": state, "agent_mode": "只读证据问答；不执行 CAE", "engineering_approval": False}
     app.openapi_schema = None

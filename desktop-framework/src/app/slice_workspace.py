@@ -27,7 +27,8 @@ def install(app,connect,root,now):
         # A single registered slice needs no inferred within-page ordering.
         return (rows,False) if len(rows)==1 else (None,False)
     def units(cid=None,key='',offset=0):
-        path=root/'vectors-v2.sqlite3'
+        from index_generations import index_path
+        path=index_path(root)
         if not path.exists():return {'items':[],'total':0,'encoding':None}
         with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=20)) as c:
             c.row_factory=sqlite3.Row
@@ -52,7 +53,8 @@ def install(app,connect,root,now):
             c.create_function('quality_state',2,lambda text,status:status or quality.classify(text)[0])
             import hashlib
             c.create_function('text_sha',1,lambda text:hashlib.sha256(text.encode()).hexdigest())
-            path=root/'vectors-v2.sqlite3'
+            from index_generations import index_path
+            path=index_path(root)
             has_units=path.exists()
             if has_units:c.execute('ATTACH DATABASE ? AS unit_index',(path.as_uri()+'?mode=ro',))
             enc="CASE WHEN ux.current=1 AND ux.complete=1 AND ux.first=0 AND ux.last>=length(c.text) THEN 'encoded' WHEN ux.current=0 THEN 'stale' ELSE 'pending' END" if has_units else "'pending'"

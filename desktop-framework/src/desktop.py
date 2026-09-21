@@ -14,9 +14,10 @@ def main():
     server=uvicorn.Server(uvicorn.Config(app,log_level='warning',access_log=False))
     thread=threading.Thread(target=lambda:server.run(sockets=[sock]),daemon=True);thread.start()
     url=f'http://127.0.0.1:{port}'
+    opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
     for _ in range(100):
         try:
-            with urllib.request.urlopen(url+'/api/health',timeout=1) as r:
+            with opener.open(url+'/api/ping',timeout=1) as r:
                 if r.status==200: break
         except OSError: time.sleep(.1)
     else: raise RuntimeError('知识库服务未能启动，请查看 desktop.log')
@@ -25,7 +26,8 @@ def main():
         if '--server-only' in sys.argv: thread.join()
         else:
             import webview
-            webview.create_window('知衡 · 仿真知识库',url,width=1440,height=940,min_size=(1050,700))
+            webview.settings['ALLOW_DOWNLOADS']=True
+            webview.create_window('知衡 · 仿真知识库',url+'/#session='+app.state.access.bootstrap,width=1440,height=940,min_size=(1050,700))
             webview.start()
     finally:
         server.should_exit=True;thread.join(timeout=5);sock.close()

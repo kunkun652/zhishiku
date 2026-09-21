@@ -33,8 +33,8 @@ class Embeddings:
      if self.process.poll() is not None:raise RuntimeError('Embedding 组件启动失败，请查看本地日志')
      time.sleep(.25)
     else:raise RuntimeError('Embedding 组件启动超时')
-  request=urllib.request.Request(self.url+path,data=json.dumps(body or {}).encode(),headers={'Content-Type':'application/json'})
-  with urllib.request.urlopen(request,timeout=30) as response:return json.load(response)
+  request=urllib.request.Request(self.url+path,data=json.dumps(body or {}).encode(),headers={'Content-Type':'application/json','Authorization':'Bearer '+self.token})
+  with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request,timeout=30) as response:return json.load(response)
  def status(self):
   if not self.command():return {'status':'unavailable','message':'本地 embedding 组件未安装','indexed':0}
   try:return self.call('/status')

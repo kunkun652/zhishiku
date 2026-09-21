@@ -1,0 +1,725 @@
+{
+  "source": "D:\\CAE-AGENT-DSH",
+  "mode": "read_only_source_snapshot",
+  "skills": [
+    {
+      "name": "cae-aerospace-static-analysis",
+      "title": "航空结构静强度总编排",
+      "summary": "基于航空 CAE 知识卡和 cae_viewer MCP，自主编排 CAD 到 Nastran OP2 的静强度分析。适用于用户提供 STEP/IGES/BDF 与结构语义，并要求完成材料、网格、工况、求解、云图和可追溯说明的任务；具体结构方法由专项方法路由决定。",
+      "content": "---\nname: cae-aerospace-static-analysis\ndescription: 基于航空 CAE 知识卡和 cae_viewer MCP，自主编排 CAD 到 Nastran OP2 的静强度分析。适用于用户提供 STEP/IGES/BDF 与结构语义，并要求完成材料、网格、工况、求解、云图和可追溯说明的任务；具体结构方法由专项方法路由决定。\n---\n\n# 航空结构静强度总编排\n\n本 Skill 只规定跨结构类型都成立的阶段依赖、证据和停止条件。壳体、梁架、实体件、连接件、复合材料等具体建模方法不得写成总规则；先分类，再读取 [专项方法路由](references/specialist-method-routing.md) 中与当前模型对应的部分。\n\n执行前读取 [Skill 要求—MCP 能力—验证方式](references/skill-mcp-verification-matrix.md)。标为“缺口”的能力不能靠提示词、手写 BDF 或历史模板假装完成。\n\nCAD 几何清理、理想化、中面和网格的默认前处理后端是本机 HyperMesh 2026；当前集成是 `cae_viewer` MCP 工具调用本机 `hmbatch.exe`，不是把 HyperMesh 当作 EXE 内嵌库；Gmsh 不作为自动回退。读取 [前处理后端契约](references/preprocessor-backend-contract.md)。先用 `aerospace_static_prepare` 取得 OCC 几何和卡片候选，再调用 `hypermesh_backend_probe`，把实际回执传给 `aerospace_static_capability_assessment.backend_receipt`，并要求 `route_ready=true`。仅有环境变量或可执行文件不等于后端可用；HM 路线失败时停止并报告需要的 HM 修复或专项理想化，不得静默改用 Gmsh。\n\n每次执行只能使用本轮工具回执返回的产物路径、run_id 和哈希。不得扫描并接续模型目录中的历史 BDF/OP2，不得用旧结果补当前失败阶段；若要复用，必须由用户明确指定且重新验证来源链。不得通过 shell 批量终止 `hmbatch.exe`/`hmopengl.exe`；超时和子进程回收由本轮 MCP 工具负责，不能影响用户另开的 HyperMesh 会话。\n\n若已选择 HyperMesh 中面路线，调用 `hypermesh_midsurface_mesh`。`element_size`、厚度上下限、清理容差和 CAD 缩放因子都必须来自当前几何、卡片或已登记假设，并把 `aerospace_static_prepare.geometry.span` 原样传给 `expected_span`。针对普通薄板可选择 `extraction_method=skin_offset|offset|offset_with_planes|offset_planes_sweeps`；针对复杂融合薄壁实体可显式选择 HM 2026 的 `direct_midmesh`，并根据模型实体语义选择 `extraction_entity=solids|surfaces`。方法和实体类型必须写入报告，不能由历史模板静默替换。默认保留 `display_in_viewer=true`；只有回执中同时存在中面或 midmesh/节点/单元非零计数、`.hm`/BDF 绝对路径、SHA-256、无失败轴的覆盖率回执和成功的 `viewer_import` 时才继续。`coverage_validation` 失败表示中面只抽取了局部结构，必须留在 HM 中修复/分件或改用有依据的 HM 梁/实体理想化，不得改用 Gmsh 掩盖缺失；HM batch 超时也必须停止该分支。该 BDF 是前处理产物；HM 中面网格的厚度赋值可能只产生中间 PSHELL，最终仍必须由卡片驱动创建并校验 MAT1/属性、厚度、载荷和约束，不得直接求解空 MAT1 或 PID=0 的网格牌组。\n若选择实体理想化，调用 `hypermesh_volume_mesh`，用 HM 2026 `*tetmesh` 生成 CTETRA；实体路线不需要壳厚，但仍必须由材料卡建立 MAT1/PSOLID，并重新做 BDF 闸门。`hypermesh_volume_mesh` 同样必须传 `expected_span`、清理容差、目标/最小网格尺寸和 `display_in_viewer=true`；最小尺寸必须同时约束 HM 边界壳网格与四面体核心，不能把目标尺寸误作最小尺寸。实体网格的覆盖率、质量、Viewer 导入、BDF 属性和载荷边界都要单独留痕。\n\n若常规 `geom_repair`/`surface_stitch` 后仍有窄面或邻近拓扑问题，可在中面或实体工具中显式启用 `limited_topology_cleanup=true`，调用 HM 2026 `*autotopocleanuplimited`。此时 `min_element_size`、`proximity_suppression_threshold`、`sharp_step_suppression_width` 和 `flat_feature_suppression_level` 必须由网格卡、当前几何和特征保留策略推导；禁止为了让网格成功而任意提高抑制范围。必须比较清理前后曲面计数和关键结构特征，若结构特征被删除或仍不能网格化则停止。\n\n若 `*tetmesh` 已生成边界壳网格但因自交、重复单元或极小二面角停止，可显式启用 `post_mesh_cleanup=true` 使用 HM `post_cln` 再试一次。必须记录 HM 返回的边界壳单元数、自交对、重复单元和低二面角对；后清理仍失败时停止，不能循环放宽容差或删除特征。\n\n## 输入与完成状态\n\n必需输入：\n\n- CAD/BDF 绝对路径；\n- 用户对结构对象和分析目的的语义描述。\n\n当用户要求一直完成到 BDF/OP2，或明确允许补全缺失信息，即授权生成可辩护的任务专属假设。授权不覆盖几何与语义冲突、卡片适用性冲突、工具能力缺口或求解错误。\n\n分别报告以下状态，不能相互替代：\n\n1. `solver_complete`：BDF 通过校验，F06 无 FATAL，OP2 同时含位移与应力；\n2. `verification_complete`：单位、载荷区域、载荷平衡、边界、网格质量、结果异常和必要的收敛/敏感性已检查；\n3. `strength_assessment`：按适用的材料方向、失效模式、载荷级别和许用值给出满足、超限或待确认。\n\n应力超过许用值仍可以是正确完成的分析结果。不得为了得到“满足”而降低载荷、增加约束、增厚或替换材料。\n\n## 工具边界\n\n- CAE 状态和显示必须通过 `cae_viewer` MCP 的裸工具名操作。\n- 卡片只通过 `knowledge_search_cards` / `knowledge_get_card` 获取。\n- 禁止使用 `solve_nastran`、`airframe_static_pipeline`、`airframe_static_preprocess` 或示例脚本替代受控流程。\n- 最终求解只调用 `aerospace_static_solve`；它会重新载入指定 BDF，并把装配检查绑定到该文件的 SHA-256。\n- 当前 MCP 没有实现的单元、连接、接触、复材或非线性能力必须作为缺口报告，不能手工绕过。RBE2/RBE3 已有专用创建工具，但仅在连接类型、节点角色、自由度及 RBE3 权重有来源时使用；不得把它们泛化为任意连接替代品。\n- 后端选择不是能力豁免：HyperMesh 只补 CAD/前处理能力，仍必须通过本地 BDF 校验、Nastran 求解、OP2 解析、结果单位检查、平衡和收敛证据。Gmsh 仅在用户明确要求或独立诊断对比时使用，不属于本 Skill 的默认执行路线。\n\n## 通用工作流\n\n### 1. 准备与模型理解\n\n首个 CAE 工具必须调用：\n\n```text\naerospace_static_prepare(input_file=..., structure_hint=用户原话, automatic=true)\n```\n\n使用其 OCC 几何、术语候选和关联卡片判断：\n\n- 用户语义是否与几何一致；\n- 模型属于哪类结构与有限元理想化；\n- 当前 MCP 是否支持该方法；\n- 需要读取专项方法路由中的哪一节。\n\n随后调用 `hypermesh_backend_probe` 和 `aerospace_static_capability_assessment`。对于多构件、融合薄壁或三向复杂结构，在选择中面/实体路线前调用 `hypermesh_geometry_diagnostics`，把 `max_thickness`、导入容差和缩放因子的来源写入假设登记。使用其组件包围盒、薄壁组数量、估算厚度和主/副/厚度面计数决定是否需要按薄壁组分件；`routing_hint` 只用于编排，不能当作中面成功或厚度批准。\n\n不得从文件名、坐标朝向或旧结果推断结构。`occ_face_index` 只属于 CAD 探查阶段；网格后必须重新调用 `model_geometry_summary`，载荷和约束只使用最新网格实体命名空间与区域查询结果。\n\n### 2. 卡片选择\n\n完整读取术语、网格、材料和工况候选。卡片是辅助理解和参数来源，不是模型专属真值。\n\n选择时必须记录：\n\n- 选中的卡号、适用性证据和审查状态；\n- 未选候选及排除理由；\n- 产品形态、厚度、温度、方向、载荷级别和分析方法是否满足卡片限制；\n- 卡片要求但当前工具无法实现的内容。\n\n候选顺序只能作为弱排序证据，不能单独作为材料或工况的选择依据。读取 `aerospace_static_prepare` 返回的 `selection_evidence`，结合结构语义、分析类型、执行就绪度、审查状态和适用性作 provisional 选择；报告未选候选及排除理由，且不得把自动评分称为工程批准。\n\n### 3. 理想化与假设登记\n\n在网格前决定单元体系、几何抽取、厚度/截面/铺层、偏置和连接传力方式。STEP 实体不自动等同于均匀 PSHELL。\n\n能从当前 CAD/网格实测的参数必须实测。圆柱或平行平面壁厚先调用 `geometry_measure_thickness` 获取 OCC 面配对候选，并结合结构语义确认对应内外壁；候选不唯一不能当作已测厚度。材料卡厚度适用范围不能替代结构厚度。无法实测且已获授权时，建立 `assumption_register`；每条至少包含：\n\n```json\n{\n  \"field\": \"...\", \"value\": \"...\", \"unit\": \"...\",\n  \"source\": \"当前几何、卡片公式或可解释工程依据\",\n  \"source_kind\": \"authorized_assumption\",\n  \"reason\": \"...\", \"confidence\": \"...\", \"sensitivity\": \"...\",\n  \"not_user_provided\": true, \"not_for_airworthiness\": true\n}\n```\n\n历史 BDF/OP2、示例脚本和模板常数不能作为新任务数值来源。\n\n### 4. 网格、材料和属性\n\n- 先用 `model_set_unit_system` 建立一致单位制；来源单位未知时停止。\n- 按专项方法和网格卡推导网格维度与尺寸；CAD 前处理默认使用 HyperMesh 2026。复杂薄壁先用 `hypermesh_geometry_diagnostics` 识别可分件薄壁组，再决定壳中面路线 `hypermesh_midsurface_mesh` 或实体路线 `hypermesh_volume_mesh`，并记录方法、几何清理状态、覆盖率和 Viewer 回执；若使用 `direct_midmesh`，还要根据几何证据选择并记录 HM 的 `midmesh_method`（`Casting` 或 `Extrusion`）；梁架路线没有对应 HM 中性轴/截面工具时停止并登记缺口。\n- `mesh_with_gmsh` 只保留为用户明确要求的对比/诊断工具，不得由 Agent 自动选择或在 HM 失败后回退。\n- 网格后用 `mesh_quality_check` 按网格卡阈值检查 CTRIA3/CQUAD4/CTETRA；工具不内置通过阈值。还必须读取 `shell_topology` 的自由边、非流形边和重复壳单元诊断；自由边是否允许取决于真实模型边界，但非流形边或重复壳单元未解释/未修复时不得进入求解。\n- HM 壳网格若未通过且几何覆盖完整，可把当前网格卡阈值原样传给 `hypermesh_midsurface_mesh.quality_criteria`，显式启用 `post_mesh_cleanup=true`。先执行一次；确有改善但仍未通过时，可在报告中登记前后违规数后把 `post_mesh_cleanup_iterations` 提高到 2–5。达到 5 次仍未通过、违规数不再下降或关键特征受损时停止。随后读取 `mesh_quality.violation_clusters`，先把当前回执簇的明确单元 ID、同轮 `input_hm` 和 `input_bdf` 传给 `hypermesh_shell_topology_diagnostics`，核对 BDF/HM ID 唯一映射、组件、最近 CAD 曲面、曲面面积/范围、原生附着单元数及 adjacent/face 扩展范围。只有 `surface_remesh_ready=true` 才能把最近曲面作为重网格载体；为 false 时直接曲面网格会产生叠层，禁止执行。对 direct-midmesh 等孤儿网格（orphan mesh，单元与原始 CAD 曲面原生附着数为 0、`surface_remesh_ready=false`），要先用 `shell_topology` 判断非流形边与自由边的真实性质：大量自由边若在 20–60mm 内成对平行且近共面，属于中面区域边界节点错位的\"错位接缝\"（unzipped seam）；`junction_pattern=stack_overlap` 的同侧近共面对是叠层。这两类是网格拓扑缺陷而非结构接头，且实测 `*optimized_elements_remesh2` 的局部重划分对它们无效——选择集边界会落在错位接缝上，重划后与对面仍错位，违规和自由边反而增加。此类缺陷不能用 local remesh 闭环，必须靠几何级修复、面片边界缝合或重新划分中面，禁止以 remesh 通过为名强行推进求解。经语义确认的区域可用 `hypermesh_shell_create_component_groups` 将明确 HM internal IDs 移入独立候选组件，为后续厚度、材料和连接策略提供载体；输出不得覆盖输入，元素总数和壳拓扑必须不变，分组本身不代表连接或属性已经完成。再把同轮 `input_hm`、`input_bdf`、映射后的 HM internal ID 和有界 `selection_expansion` 传给 `hypermesh_shell_local_remesh`。接受候选前必须同时满足输入哈希可追溯、种子/扩展选择数量相符、扩展未超过显式上限、跨度无失败轴、`violation_count_delta < 0`，且自由边、非流形边和重复壳单元均不增加。`quality_no_improvement` 或 `topology_regression` 必须拒绝，最多比较有依据的 0/1/3 算法和 none/adjacent/face 拓扑范围；全部无改善时停止并报告需要 HM 分面/组件/几何级人工或专项修复。禁止循环放宽卡片阈值。\n- `materials_create_from_card` 当前建立 MAT1 与属性。只有金属各向同性且属性类型受支持时使用；厚度必须来自当前模型证据或登记假设。\n- 每次实质状态改变后等待桌面任务完成，并用 `model_summary`/Viewer 确认最新状态。\n- 后台操作必须用 `cae_job_status` 轮询到终态并保存任务回执；“工具调用成功”不等于任务完成，也不等于工程批准。\n\n### 5. 工况装配\n\n逐项展开工况卡中的 `param_contract_json`、载荷、约束和检查规则。载荷幅值、方向、覆盖区域、载荷级别与组合系数必须分别留痕。\n\n每个 `resolved_inputs` 必需参数使用 `sym` 或 `p` 作为键，值为记录对象：\n\n```json\n{\n  \"value\": 0.05, \"unit\": \"MPa\",\n  \"source\": \"用户输入/几何实测/卡片公式\",\n  \"source_kind\": \"user_input|geometry_measurement|card_formula|authorized_assumption\"\n}\n```\n\n授权假设还必须包含第 3 节列出的五个审计字段。\n\n除重力外，每一种载荷在施加前都调用 `model_query_region`。把原始回执与载荷语义一起保存：\n\n```json\n{\"semantic\": \"pressure|force|moment\", \"region\": {...}, \"query\": {...原始回执...}}\n```\n\n压力区域必须命中单元；力和力矩区域必须命中节点。查询成功但命中数量为零不能作为证据。载荷和约束施加后再次检查实际卡片数量与 set/subcase 关系。\n\n仅使用当前已实现的路径：\n\n- 压力：`loads_apply_region_pressure`；\n- 区域合力：`loads_apply_region_force`；\n- 节点力矩：先查询区域取得节点，再用 `loads_apply_moment`；\n- 重力/惯性：`loads_apply_gravity`；\n- 区域约束：`loads_apply_region_constraint`。\n\n接触、预紧、梁截面、复材逐层结果等若没有对应创建工具或结果能力，停止该方法分支并报告缺口。刚性蜘蛛只有在连接语义明确且工况卡要求时调用 `connections_create_rbe2`；插值载荷分配可调用 `connections_create_rbe3`，但参考节点、参考自由度、每个独立节点的自由度与权重都必须有依据，当前不创建 UM 项。线性柔性连接可调用 `connections_create_cbush` 创建 CBUSH + PBUSH(K)，但必须有真实接口 GRID、基本坐标系方向以及带单位和来源的 K1..K6；不得用任意刚度代替接触、间隙、摩擦、螺栓预紧或缺失的连接试验数据。复材壳可用 `materials_create_mat8` 和 `properties_create_pcomp` 创建明确的正交材料与铺层，但不能在缺少逐层 OP2 结果时声称复材强度闭环。创建后必须核对返回 EID/PID/MID、模型摘要中的对应关系或单元卡数量及最终 BDF 卡片。\n\n### 6. 装配、求解和结果检查\n\n导出最终 BDF 后，先对该文件调用 `mesh_quality_check`，再把同轮完整回执作为 `mesh_quality_receipt` 传给 `aerospace_static_validate_assembly` 和 `aerospace_static_solve`。闸门必须逐项通过：模型实体、单位、材料/属性、约束、工况所需载荷卡、每个必需输入记录、每类区域证据、单元质量、非流形接头闭合和重复壳单元；缺失质量回执也必须阻止求解。若存在非流形边，使用 `shell_topology.nonmanifold_clusters` 的 BDF 单元 ID 作为逐簇诊断种子，并把同轮 BDF 作为 `input_bdf` 传给 `hypermesh_shell_topology_diagnostics`。只有 `selection.missing_count=0` 且映射唯一时才能继续；调用 HM 修改工具必须消费返回的 `hm_element_id` 或 HM 拓扑 ID，不能直接使用 BDF EID。候选还不得增加自由边、非流形边或重复壳单元；`topology_regression` 必须拒绝。非流形不自动等同于缺陷：用 `mesh_assess_shell_junctions` 分类。新版质量回执的 `shell_topology.nonmanifold_edge_details` 已含同轮计算的 `junction_pattern`（按壳片连续/终止几何关系，而非单纯角度）：`t_branch`（一片连续穿过加至少一片终止）、`cross`（两片连续穿过）、`angle_joint`（多片全部终止，如型材截面角接线或折弯蒙皮-腹板）、`multi_branch`（多片连续加分支）、`stack_overlap`（同侧近共面叠层）。工具据此给出 `t_junction_candidate`、`cross_junction_candidate`、`angle_junction_candidate`、`multi_branch_candidate` 合法结构候选；`stack_overlap` 单独记为 `stack_overlap_defect` 并计入 `unresolved_edge_count`，属于必须修复的网格缺陷（重复/重叠壳片导致刚度双计），禁止作为结构接头接受。无 `junction_pattern` 的旧回执回退到显式角度计数（三壳片 T 接、满足完整成对夹角的四向交汇），保持兼容；未分类边读取连通簇、包围盒和关联单元。只有完整详情中所有边均分类为合法候选且 `stack_overlap_defect_count=0`，才能通过 `mesh_accept_shell_junction_assessment` 生成带依据与来源的分析接受回执，并作为 `shell_junction_receipt` 传给闸门。该回执不是工程批准；存在未分类、叠层缺陷、几何关系不满足或详情截断时仍禁止求解。不得只看总数后反复执行全局重划分，也不得把 T 接、角接、重叠面或真实连接区自动删除。\n\n随后调用 `aerospace_static_solve`。求解成功至少验证：\n\n- 返回的 `validated_bdf` 与提交路径一致，并保留 `validated_bdf_sha256`；\n- F06 无 FATAL；\n- OP2 位移存在且 `stress.available=true`；\n- 用户要求应力图时使用 `result_field=\"von_mises\"`，确认逐单元场已显示。\n- 调用 `results_query_diagnostics` 检查应力分布、OLOAD/SPCFORCES 的合力与合矩平衡。基本坐标与矩形 CORD1R/CORD2R 的 GRID CD 会转换到基本坐标系；圆柱/球输出坐标或缺少 BDF 坐标导致完整合矩不可用时，不得把 `verification_complete` 标为完成。\n- 将 F06 路径传给 `results_query_diagnostics` 检查 FATAL、矩阵奇异、零主元、机构、GRID POINT SINGULARITY TABLE 和 AUTOSPC 信号。需要判断峰值是否为网格奇异时，至少生成三个有血缘的细化等级，并传入各级 `mesh_size`、`max_stress`，优先同时传 `p99_9_stress` 和 `max_displacement`。若最大应力随细化单调增长且最新变化仍超容差，而 99.9 百分位或位移已经收敛，按局部应力奇异候选处理，禁止据此直接判定材料失效。只有工具返回 `strength_conclusion_allowed=true` 才能把网格收敛作为强度结论证据；该结果仍不等同工程批准。\n- 正式收敛结论使用 `results_assess_mesh_convergence`，为每一级提供真实且同名的 BDF/F06/OP2、实际 `mesh_size`、同一 BDF 路径和 SHA-256 的 `mesh_quality_receipt` 与 `assembly_gate`。工具会从 OP2 sidecar 自行提取应力百分位和最大位移，并要求细化后应力单元数增加；不得把手填结果数组作为正式收敛证据。两级只支持变化比较，至少三级才支持单调峰值发散判断。\n- 已经为每一级独立完成材料/属性、载荷、约束、连接、区域探查和质量回执时，调用 `aerospace_static_convergence_solve` 顺序执行 2–6 级受控 Nastran 求解，并自动接入 `results_assess_mesh_convergence`。每一级必须提供自己的完整输入和回执；不得把粗网格节点/单元 ID、区域回执或质量回执复用于细网格。任一级失败即停止，不得跳过后继续拼接收敛曲线。\n\n若出现机构、奇异、超限或异常峰值，先定位原因并检查连接、约束、载荷区域、单位、厚度和网格；新增稳定约束必须有物理依据。没有至少两级收敛记录时不得宣称网格收敛，只有两级时也不能据此确认单调发散；将 `verification_complete` 标为未完成。\n\n## 最终回执\n\n在 EXE 聊天中说明：模型理解与理想化、引用及排除的卡片、材料与属性、网格策略和质量、工况与传力路径、假设登记、BDF/F06/OP2 路径及哈希、结果场与峰值位置、三个完成状态、超限原因和待确认项。\n",
+      "source": "D:\\CAE-AGENT-DSH\\skills\\cae-aerospace-static-analysis\\SKILL.md",
+      "sha256": "8b425c6d83e67d8c5d0ed7eac0110c5e6b7a0095a8e6bf99e95d8d5c627672b0",
+      "references": [
+        {
+          "name": "preprocessor-backend-contract.md",
+          "source": "D:\\CAE-AGENT-DSH\\skills\\cae-aerospace-static-analysis\\references\\preprocessor-backend-contract.md",
+          "sha256": "260ae977d5978452e956608dd641af8abda2a6b4a4332e89a4630619ed38dc4e",
+          "content": "# 前处理后端契约\n\n本契约用于将 HyperMesh 或其他高级前处理器接入总 Skill。它只补充 CAD 理想化、拓扑整理和网格能力，不替代本地 BDF/Nastran/OP2 闭环。\n\n## 能力探测回执\n\n实际后端必须返回 JSON 回执，至少包含：\n\n```json\n{\n  \"ok\": true,\n  \"backend\": \"hypermesh\",\n  \"contract_version\": \"1.0\",\n  \"run_id\": \"actual-backend-run-id\",\n  \"capabilities\": [\"geometry_diagnostics\", \"midsurface_extraction\", \"volume_tet_mesh\", \"geometry_cleanup\", \"bdf_export\"]\n}\n```\n\n端点、可执行文件或许可证的存在不是能力回执。当前本机适配器的 `transport` 应记录为 `mcp_local_batch`，并指出实际 `hmbatch.exe` 路径；`run_id` 必须来自本次实际后端任务，不得由 Agent 自行填写。\n\n输出只属于当前 run_id。调用方不得通过目录扫描选择历史 `.hm`、BDF 或 OP2 来跨过当前失败，也不得用 shell 批量结束系统中的 HM 进程；MCP 只负责回收自己启动的 batch 子进程。历史产物只有在用户明确指定并重新建立输入哈希、牌组校验和求解链后才可复用。\n\n## 任务输入\n\n每次执行显式提供：源 CAD 绝对路径及 SHA-256、源/目标单位制、求解器模板、所需能力、厚度范围或来源、几何容差、网格目标与质量阈值，以及 OCC 输入模型三向跨度 `expected_span`。不把案例面号、厚度、网格尺寸或连接容差写成通用默认值。\n\n## 中面/拓扑任务回执\n\n复杂、多构件或融合薄壁结构先调用 `hypermesh_geometry_diagnostics`。诊断回执至少包含 HM 2026 版本、run_id、实体/曲面/组件计数、全局及组件包围盒、薄壁组数量、估算厚度、主/副/厚度面计数和日志。该工具基于 `hm_getgeometricthinsolidinfo` 与 `hm_getboundingbox`；它只提供分件和路线证据，不创建中面，也不能替代厚度来源审查。\n\n至少包含：\n\n- 原几何面到中面的实体 ID 映射；\n- 每个厚度区域的厚度、偏置、法向和来源；\n- 失败/未处理区域、自交、间隙、重叠和自由边诊断；\n- 面组、边组、孔/圆角/接头组与原 CAD 的可追溯映射；\n- 中面模型产物的绝对路径和 SHA-256；若使用 `direct_midmesh`，必须明确记录这是 midmesh 网格而不是“中面曲面”实体。\n\n## 网格与 BDF 回执\n\n至少包含：\n\n- 全局与局部面/边控制的实际参数；\n- 节点/单元数、单元类型、组件/属性/集合统计；\n- 输入 OCC 三向跨度与输出网格三向跨度的覆盖率；输入中的显著方向不得在中面后消失；\n- 质量指标、违规实体 ID 及未达标原因；\n- 导出 BDF 绝对路径、SHA-256、求解器 profile 和导出诊断。\n\n`hypermesh_midsurface_mesh` 默认在导出后调用 `viewer_import_model` 把 BDF 载入 EXE；必须检查其 `viewer_import` 回执，禁用自动显示时则要显式调用 `viewer_import_model`。随后再调用 `bdf_validate`、`aerospace_static_validate_assembly` 和 `aerospace_static_solve`。HyperMesh 的成功退出码不能替代这些校验。\n\n`hypermesh_volume_mesh` 对实体路线执行同样的导出、Viewer 导入、覆盖率和 BDF 校验；它生成的是 CTETRA 前处理网格，后续必须创建 PSOLID/MAT1。\n\n实体路线必须把调用方给出的目标尺寸与最小尺寸分别传给 HM `*tetmesh` 的边界二维网格和四面体核心；不得将目标尺寸重复写成最小尺寸。若边界壳检查报告自交、重复单元或极小二面角，可由调用方显式设置 `post_mesh_cleanup=true`，使 HM 使用 `post_cln` 做一次后清理重试。回执必须结构化保留边界壳单元数、自交对、重复单元数及低二面角对；一次后清理仍失败即停止。\n\n`hypermesh_midsurface_mesh` 导出的是前处理网格牌组。可通过 `extraction_method` 选择 HM 2026 的常规 `midsurface_extract_10` + `midsurfmesh`，或 `direct_midmesh`；可通过 `extraction_entity` 明确使用 solids 或 surfaces。工具回执必须保留方法、实体类型、几何清理 `requested/status`、超时/错误阶段和 `thickness_assignment`。HyperMesh 可能产生空 MAT1/PSHELL 或 PID=0 单元；这些只是厚度映射的中间表达，不是可求解材料。重新导入 EXE 后必须调用 `materials_create_from_card`。单一区域可直接创建完整 MAT1/属性；多材料或多厚度模型必须先用有来源的 HM 组件/区域分组，再把该区域的明确 BDF 单元 ID 传给 `materials_create_from_card(elements=..., property_id=...)`，核对返回 MID/PID 和单元归属后导出最终 BDF。不得因组件名称或几何位置自行杜撰厚度、材料或产品形态。\n\n`batch_timeout`、`coverage_validation`、`capability_gate` 和非零 HM 失败回执都是停止信号。不要因为 `.hm` 或 BDF 已经落盘就把该分支标为成功；必须检查日志、覆盖率、网格质量和最终属性绑定。\n\n`geom_repair`/`surface_stitch` 不足时，可显式使用 `limited_topology_cleanup` 触发 HM `*autotopocleanuplimited`。必须记录目标/最小单元尺寸、邻近抑制阈值、锐边抑制宽度、扁平特征级别，以及清理前后曲面数。该命令可能抑制孔、窄面、圆角或其他结构特征；没有几何和网格卡依据时不得开启，更不能把“命令 applied”当作几何正确或网格成功。\n\n当前 HM 2026 命令依据：[`*midsurface_extract_10`](https://help.altair.com/hwdesktop/hwd/topics/reference/hm/_midsurface_extract_10.htm)、[`*midsurfmesh`](https://www.2024.help.altair.com/2024/hwdesktop/hwd/topics/reference/hm/_midsurfmesh.htm)、[`*midmesh_extract`](https://help.altair.com/hwdesktop/hwd/topics/reference/hm/_midmesh_extract.htm)、[`*tetmesh`](https://help.altair.com/hwdesktop/hwd/topics/reference/hm/_tetmesh.htm) 和 [`*autotopocleanuplimited`](https://help.altair.com/hwdesktop/hwd/topics/reference/hm/_autotopocleanuplimited.htm)。这些文档只说明命令能力，不替代本契约的实际回执与求解前校验。\n\n## 停止条件\n\n出现以下任一情况时，对应方法分支不得继续：能力未在回执中声明、回执无实际 `run_id`、产物不存在或哈希不匹配、实体映射不完整、任一显著方向覆盖率低于契约阈值、单位未闭合、关键几何/网格诊断未处理。失败后不得静默回退 Gmsh。\n"
+        },
+        {
+          "name": "skill-mcp-verification-matrix.md",
+          "source": "D:\\CAE-AGENT-DSH\\skills\\cae-aerospace-static-analysis\\references\\skill-mcp-verification-matrix.md",
+          "sha256": "37f4e579187ce426f63da95fb48dc9df534b2ee2210815f022bf7d3b13333742",
+          "content": "# Skill 要求—MCP 能力—验证方式\n\n状态含义：`已具备` 表示当前 MCP 有直接接口；`部分具备` 表示只能完成基础动作，仍需其他证据或缺少工程校验；`缺口` 表示不得宣称完成。\n\n| Skill 要求 | MCP 能力/工具 | 状态 | 验证方式 |\n|---|---|---|---|\n| CAD 导入与 OCC 几何探查 | `aerospace_static_prepare`、`viewer_import_model`、`model_geometry_summary` | 已具备 | 返回导入成功、包围盒、拓扑和曲面清单；Viewer 显示当前模型 |\n| 前处理后端能力路由 | `hypermesh_backend_probe`、`aerospace_static_capability_assessment` | 已具备 | 用本次 HyperMesh batch 回执返回结构特征、路由、`route_ready`和阻塞项；配置不等于已验证 |\n| HyperMesh 几何/薄壁分组诊断 | `hypermesh_geometry_diagnostics` | 已具备 | HM 2026 实际导入后返回实体/曲面/组件计数、全局及组件包围盒、薄壁组估算厚度和主/副/厚度面计数、日志与 run_id；只证明可编排诊断，不证明中面完成 |\n| HyperMesh 实际执行适配 | `hypermesh_midsurface_mesh`、`hypermesh_volume_mesh` 通过 `cae_viewer` MCP 调用本机 HyperMesh 2026 batch，支持缝合/匹配、显式有限拓扑清理、常规中面/直出 midmesh、CTETRA、HM 保存、Nastran BDF 导出、三向覆盖率闸门和 EXE 显示区导入 | 部分具备 | 必须传 OCC `expected_span`；若启用 `*autotopocleanuplimited`，全部抑制参数必须有来源并核对清理前后曲面/特征；回执还要有 HyperMesh 2026 版本、run_id、非零网格计数、产物路径、SHA-256、无失败轴和成功的 `viewer_import`；复杂面组/边组、梁架理想化、连接和最终属性自动闭合仍未完成 |\n| 四类卡片检索与读取 | `knowledge_search_cards`、`knowledge_get_card` | 已具备 | 返回卡号、原始字段、来源路径和审查状态 |\n| 自动选卡 | `aerospace_static_prepare(automatic=true)` 输出语义、分析类型、就绪度、审查状态和关联顺序的分项评分 | 部分具备 | 必须检查适用性和排除理由；自动结果是 provisional，不等于工程批准 |\n| 单位设置与材料、载荷换算 | `model_set_unit_system`、各创建/载荷包装工具 | 已具备 | 检查 `units_ready` 与 `conversions`；源单位未知时阻塞 |\n| 壳厚和中面自动识别 | `geometry_measure_thickness`、`hypermesh_geometry_diagnostics`、`hypermesh_midsurface_mesh` | 部分具备 | 核对 OCC 候选、HM 薄壁组、HyperMesh 中面计数、厚度范围、HM/BDF 产物；复杂多区域映射和人工修复仍可能必需 |\n| HyperMesh 全局二维/中面网格 | `hypermesh_midsurface_mesh`（常规中面或 `direct_midmesh`） | 部分具备 | 检查 HM 版本、方法、节点/单元、覆盖率、质量、BDF 和 Viewer；复杂融合实体可能超时或只生成局部中面 |\n| HyperMesh 实体四面体网格 | `hypermesh_volume_mesh`（HM `*tetmesh`） | 部分具备 | 目标/最小尺寸分别传给边界壳网格和四面体核心；可显式启用 `post_mesh_cleanup`；检查实体网格能力回执、CTETRA 计数、三向覆盖率、质量、BDF 和 Viewer，失败时留存边界壳单元、自交对、重复单元和低二面角对；几何缝隙/坏拓扑、局部连接和压力面闭合仍可能阻塞 |\n| Gmsh 全局二维/三维网格 | `mesh_with_gmsh(dim,size)` | 已具备（仅显式诊断/对比） | 只有用户明确要求或独立对比时检查节点、单元、维度；不得作为 HM 自动失败后的回退 |\n| 局部网格、算法和分区控制 | `mesh_quality_check` 输出坏单元质心/原因/连通簇；`hypermesh_shell_topology_diagnostics(input_bdf=...)` 映射 BDF EID 与 HM internal ID；`hypermesh_shell_create_component_groups` 创建不改拓扑的候选组件；`hypermesh_shell_local_remesh` 执行有界局部重划分 | 部分具备 | 检查输入/输出哈希、ID 唯一映射、组件选择数量、元素总数与壳拓扑不变；重划分还需跨度、质量和拓扑不退化；组件仅是属性/连接载体，不等于几何分区完成；拓扑 CAD 面/边编辑仍是缺口 |\n| 网格质量与壳拓扑 | `mesh_quality_check` 诊断自由边、非流形边、壳片成对夹角、连通簇、关联单元和重复壳；`mesh_assess_shell_junctions` 识别三壳片 T 接及四向交汇候选，并定位未分类簇；`mesh_accept_shell_junction_assessment` 生成有来源的分析接受回执 | 部分具备 | 检查几何质量与 `shell_topology`；角度阈值必须有来源，详情不能截断，未满足完整夹角关系的边保持 unresolved；接受回执不是工程批准；自由边需按真实边界解释，未闭合接头和重复单元阻止求解；自交检测仍需扩展 |\n| 网格收敛 | 尚无自动多级运行工具 | 部分具备 | 至少比较两个网格级别和关键结果变化才能声称收敛 |\n| MAT1 与基础属性创建 | `materials_create_from_card`、`materials_create`；可按明确 BDF 单元 ID 创建隔离的新 PID | 已具备 | 检查 MAT1、返回的 MID/PID、区域单元归属、PSHELL/PSOLID、厚度、单位换算和卡片适用性；组件/区域本身不构成厚度或材料依据 |\n| MAT8/PCOMP 创建、读取与保留 | `materials_create_mat8` → C++ MAT8 数据模型 → BDF `MAT8`；`properties_create_pcomp` → 逐层数据模型 → BDF `PCOMP` | 已具备 | 检查 E1/E2/NU12/G12/G1Z/G2Z、密度、强度、MID、逐层 MID/厚度/角度/SOUT、铺层顺序、SYM 来源、PID、总厚度、单位换算和壳单元区域；不得从 MAT1 猜测正交参数 |\n| 壳上/下表面与复材指定层 von Mises | OP2 解码保留 fiber-distance 表面和 element-layer 数据；`results_import_op2` 选择表面或 `ply_index` | 已具备 | 仅在 OP2 实际包含对应表时显示逐单元云图；检查字段标签、层号、结果数量和单位，缺表必须失败 |\n| PCOMPG、材料方向场与复材逐层失效指数 | 当前 MCP/C++/OP2 链路不完整 | 缺口 | 需全局层 ID/方向映射、逐层应力应变与 Hill/Tsai-Wu 等失效指数结果；不得使用 MAT1、整体或单层 von Mises 替代 |\n| 区域定位 | `model_query_region` | 已具备 | 原始回执 `ok=true` 且压力命中单元、力/力矩命中节点 |\n| 压力、合力、重力和 SPC | `loads_apply_region_pressure`、`loads_apply_region_force`、`loads_apply_gravity`、`loads_apply_region_constraint` | 已具备 | 检查载荷卡数量、方向、单位、区域及 SID/subcase |\n| 区域力矩 | `loads_apply_region_moment` | 已具备 | 检查区域命中节点数、合力矩/逐节点分配、方向、单位和 SID |\n| RBE/CBUSH 读取与显示 | C++ 可保留/解析 RBE 关系及基础 CBUSH/PBUSH(K) 图形与属性数据 | 已具备 | 用现有 BDF 检查拓扑、方向、属性引用、刚度和 Viewer 实体；不代表接触或预紧能力 |\n| RBE2 创建 | `connections_create_rbe2` → C++ 关系数据模型 → BDF `RBE2` | 已具备 | 检查独立/从属 GRID、自由度、EID 唯一性、模型摘要及导出 BDF；工况卡要求 RBE2 时装配闸门必须检查其存在；不得将刚性蜘蛛用于柔性或接触连接 |\n| RBE3 基础创建 | `connections_create_rbe3` → 带权关系数据模型 → BDF `RBE3` | 已具备 | 检查参考 GRID/自由度、各独立 GRID/自由度/权重、EID、模型摘要和导出 BDF；工况卡要求 RBE3 时装配闸门必须检查；当前不创建 UM 项 |\n| CBUSH 创建与 PBUSH(K) 基础属性 | `connections_create_cbush` → C++ CBUSH/PBUSH 数据模型 → BDF `CBUSH` + `PBUSH,K` | 已具备 | 检查 GA/GB、基本坐标系方向、K1..K6 数值/单位/来源、EID/PID 唯一性、模型摘要与导出 BDF；装配闸门检查工况卡要求的 CBUSH |\n| 接触、摩擦、间隙与预紧 | 当前无完整 MCP 创建、非线性求解和结果契约 | 缺口 | 需接触面、接触参数、预紧截面、求解控制和结果校验同时存在；不能用 RBE2/RBE3、CBUSH 或节点固定替代 |\n| 工况必需参数闭合 | `aerospace_static_validate_assembly` | 已具备 | 每个 `param_contract_json.req=true` 参数都有值、单位、来源和来源类型；授权假设含完整审计字段 |\n| 区域证据闭合 | `aerospace_static_validate_assembly` | 已具备 | 每个区域载荷 semantic 有有效且非零的查询回执 |\n| 求解文件与闸门绑定及质量 | `aerospace_static_validate_assembly`、`aerospace_static_solve(mesh_quality_receipt=..., shell_junction_receipt=...)` | 已具备 | 求解前重载同一 BDF；回执含绝对路径和 SHA-256；强制拒绝缺失质量回执、单元质量违规、未闭合非流形接头和重复壳单元；仅同源且全部分类的接头接受回执可解除非流形阻断 |\n| BDF、Nastran 和 OP2 | `model_export_bdf`、`bdf_validate`、`aerospace_static_solve` | 已具备 | BDF 校验通过、F06 无 FATAL、OP2 位移和应力存在 |\n| 位移与 von Mises 云图 | `results_import_op2(result_field=...)` | 已具备 | Viewer 标题/图例与请求字段一致，结果数量非零 |\n| 壳分量、层结果和多失效模式 | 上/下表面及指定层 von Mises 已具备；完整张量、应变和多失效模式不足 | 部分具备 | 按工况判据选择真实 OP2 表；不能仅用 von Mises 代替复材失效指数 |\n| 支反力与力分量平衡 | BDF 请求 OLOAD/SPCFORCES；`results_query_diagnostics` 汇总 | 已具备 | 检查每个 subcase 的 applied/reaction 与相对残差 |\n| 完整合矩平衡 | `results_query_diagnostics` 将基本坐标及矩形 CORD1R/CORD2R 的 GRID 位置和 CD 结果向量转换到基本坐标系，再计算关于原点的合矩 | 部分具备 | 检查合力/合矩相对残差及 `coordinate_issue`；圆柱/球 CD 仍明确阻断完整平衡结论 |\n| 峰值定位与奇异性筛查 | `results_query_diagnostics(f06=..., convergence_series=...)` 检查求解器奇异信号、峰值/百分位离群度和多级网格趋势 | 已具备 | F06 信号、峰值与 P99/P99.9 比值、至少三级细化中峰值是否发散而分布量/位移收敛；筛查不等于工程批准 |\n| 多级网格结果收敛与血缘验证 | `results_assess_mesh_convergence` 读取每级真实 BDF/F06/OP2、质量回执和装配闸门 | 已具备 | 检查同名产物、BDF SHA-256、质量/装配闸门、应力/位移、单元数随细化增加及收敛/发散分类 |\n| 多级网格逐级受控求解 | `aerospace_static_convergence_solve` 对每级独立装配输入调用 `aerospace_static_solve`，再自动收敛评估 | 已具备 | 每级自己的材料/工况/区域/质量回执；任一级失败即停止；检查真实 F06/OP2 和最终血缘结果 |\n| 自动多级 HM 网格生成与属性/工况重映射 | Agent 编排 HM 多级网格并为每级重新建立区域语义 | 部分具备 | 逐级求解和结果验证已具备；仍缺从 CAD/HM 基线自动派生多级网格并安全重映射材料、载荷、约束和连接的单一工具 |\n| EXE 最终回执 | Agent 聊天与 MCP 工具回执 | 部分具备 | 内容必须来自本任务回执和文件，不得引用旧案例结果 |\n\n维护规则：修改 Skill 要求或新增 MCP 工具时，同步更新本表和契约测试。`缺口` 只有在接口、测试与实际桌面验证同时完成后才能改为 `已具备`。\n"
+        },
+        {
+          "name": "specialist-method-routing.md",
+          "source": "D:\\CAE-AGENT-DSH\\skills\\cae-aerospace-static-analysis\\references\\specialist-method-routing.md",
+          "sha256": "6edced81e8577a1e17eeda441075b58e41efd2bdd3ab7cbbe197ec6447c093d9",
+          "content": "# 专项方法路由\n\n本文件定义总 Skill 如何选择专项分析方法。这里只给出判定条件和能力边界，不包含模型坐标、固定数值或案例面号。\n\n## 金属薄壁壳、壁板和筒段\n\n使用条件：几何和图纸能够支持壳中面、厚度、偏置与连接关系；材料可用 MAT1 表示。\n\n必须确认：真实厚度来源、内外表面与法向、框/长桁/蒙皮连接、压力覆盖范围、边界传力、壳上下表面结果与网格收敛。圆筒膜应力公式只能用于数量级校核，不能替代有限元模型。\n\n当前默认调用 HyperMesh 2026 完成 STEP 几何清理、自动中面/直出 midmesh、壳网格、HM 模型和 Nastran BDF 导出，并用输入/输出三向跨度验证覆盖率。普通薄板可使用常规中面提取；复杂融合薄壁实体可由 Agent 依据实际几何选择 `direct_midmesh`，并根据模型实体语义选择对应方法，把方法和参数写入报告。具有可靠分区与厚度/材料来源时，可将 HM 组件映射得到的 BDF 单元 ID 交给材料工具，为各区域创建隔离的新 PID/MAT1/PSHELL；必须核对区域单元数及返回 PID，不能把组件分组本身当作物性依据。自动中面对复杂多厚度、分叉、小间隙和连接区仍可能只抽取局部结构或 batch 超时；此时必须留在 HM 中修复/分件或改选有依据的 HM 梁/实体方法。拓扑面/边精确几何编辑、连接创建和壳分层结果查询仍是缺口。Gmsh 不作为自动回退。\n\n## 金属实体件、支架和接头\n\n使用条件：实体体积有效，载荷与约束面可定位，材料可用 MAT1 表示。\n\n必须确认：孔、圆角和接触部位的局部网格；载荷是否通过销、螺栓或接触传递；约束是否代表实际接口。把孔面全固定或把合力均匀施加到任意面需要物理依据。\n\n当前 MCP 通过 HyperMesh 2026 的 `hypermesh_volume_mesh` 可完成基础 CTETRA 网格、几何清理、三向覆盖率和质量检查，再用本地 CAE 工具完成基础载荷/SPC。实体接触、销轴/螺栓连接与预紧仍是缺口；实体网格未通过拓扑/覆盖率或压力面定位时必须停止。\n\n## 梁、框架和一维理想化\n\n使用条件：中性轴、截面、方向和连接能够由几何或图纸确定。\n\n当前 MCP 没有从 CAD 自动抽取一维骨架和创建梁截面/方向的完整 HM 接口。三向梁架若自动中面只保留一个平面，覆盖率闸门必须阻止求解；不得把该方法伪装成壳或实体流程，也不得回退 Gmsh 外表面网格。报告缺口并要求扩展 HM 中性轴/截面工具。\n\n## 销轴、螺栓、紧固件和接触\n\n若工况卡要求 RBE、CBUSH、接触、摩擦、间隙或预紧，先检查对应 MCP 创建工具。可用 `connections_create_rbe2` 创建有明确独立/从属 GRID 与自由度依据的刚性蜘蛛；可用 `connections_create_rbe3` 创建有明确参考节点、独立节点、自由度与权重依据的基础插值蜘蛛，当前不创建 UM 项；可用 `connections_create_cbush` 创建有明确接口节点、基本坐标系方向和带来源 K1..K6 的线性 CBUSH/PBUSH。模型摘要和装配闸门会检查对应关系卡或 CBUSH 单元卡，最终 BDF 必须保留 EID/PID。接触、摩擦、间隙和预紧仍未形成完整创建闭环，因此不能宣称完成这些连接分析，也不能用 RBE2/RBE3、CBUSH 或节点固定替代。\n\n## 复合材料\n\n需要 MAT8、PCOMP/PCOMPG、铺层方向、层厚、失效准则和层结果。基础正交单层材料可调用 `materials_create_mat8`；明确的壳单元区域和逐层 MID、厚度、角度、SOUT 可调用 `properties_create_pcomp`，列表顺序按铺层次序保留，`SYM` 只在来源明确时使用。创建后检查 MAT8/PCOMP、壳单元 PID、总厚度和单位。可用 `results_import_op2(result_field=composite_ply_von_mises, ply_index=...)` 显示 OP2 中实际存在的指定层 von Mises，也可显示壳上/下表面；缺表时必须明确失败。尚未创建 PCOMPG、材料方向场和逐层失效指数，因此完整复材强度结论仍属于能力缺口；不得用整体 von Mises 代替逐层失效判据。\n\n## 屈曲、塑性、接触非线性和疲劳\n\n当前受控求解入口面向线性静力 SOL 101。需要 SOL 105/106/400、材料非线性、初始缺陷、接触迭代或疲劳谱时，不能继续套用本流程。应报告所需分析类型和缺失工具。\n\n## 专项 Skill 的新增条件\n\n一种结构方法具备稳定的输入契约、对应 MCP 工具和独立基准算例后，可以新增专项 Skill。专项 Skill 只描述该方法的判定、建模和验证规则；具体产品或单个 STEP 的参数保存在案例记录中，不写入 Skill。\n"
+        }
+      ]
+    },
+    {
+      "name": "cae-geometry-meshing",
+      "title": "几何理解与网格划分",
+      "summary": "使用 CAE Viewer MCP 和 HyperMesh 2026 完成 STEP 几何理解、局部缺陷定位、网格试划与质量检查。用于只要求几何诊断或网格划分的任务；独立于知识卡和静力求解流程。",
+      "content": "---\nname: cae-geometry-meshing\ndescription: 使用 CAE Viewer MCP 和 HyperMesh 2026 完成 STEP 几何理解、局部缺陷定位、网格试划与质量检查。用于只要求几何诊断或网格划分的任务；独立于知识卡和静力求解流程。\n---\n\n# 几何理解与网格划分\n\n终点是可追溯的几何诊断或经过检查的网格，不包含材料、工况、载荷、约束、求解或强度判断。不要调用旧的 `cae-aerospace-static-analysis`，不要先跑 `aerospace_static_prepare` 或要求材料/工况卡。用户只要求诊断时，到诊断即结束；“先别执行”时只给方案。\n\nDSH 工具前缀为 `mcp__cae__`，下文使用裸工具名。工具实际由 `@cae-agent/dsh-cae-viewer-mcp` 动态注册；缺少新工具时说明需要重启插件连接/桌面加载已部署后端，不能假装调用成功。\n\n## 用几何证据决定路线\n\n先调用 `geometry_feature_inventory(input_file=...)`。工具以 Gmsh 的 OCC 接口做只读测量，不执行 Gmsh 网格。它自动读 STEP 长度单位、统一测量到 mm，并保存完整 JSON。无需让用户手填文件已经声明的单位。单位缺失、混合或不支持才问用户；缩放因子从已确认源单位到目标单位推导。\n\n摘要包括面类型、面积/体积、边长分布、小特征位置、曲率以及平面间材料跨度采样。用 `geometry_inventory_query(report, collection, ids/offset/limit)` 获取局部细节，避免整份 JSON 灌入上下文。特别注意：\n\n- `2A/P` 只是窄面排序指标，不是最小宽度或壁厚。\n- 平行面间距要验证投影落在裁剪面内、连接线位于材料内；工具的三点内检仍只产生局部候选，不能证明完整厚度场或排除小孔隙。\n- 圆柱半径本身不能区分孔、圆角和外轮廓；不能把大圆柱半径当最小特征。\n- 同一融合实体可能含薄板、型材和厚节点。一个 solid 不等于一种有限元理想化。\n- 包围盒最长轴不一定是结构轴。X/Y 接近时，应结合圆柱轴、重复构件位置、用户语义判断，不能自动选 Y。\n\n调用 `hypermesh_geometry_inventory`，保存当前 HM 快照与原生面/边编号。它不需要先给薄壁厚度上限。默认导入容差是明确记录的 1e-5 mm 数值假设，不能说它来自设计公差。检查查询警告；缺失包围盒不等于不存在该实体。\n\nOCC、Viewer、HM 使用不同编号体系。只把 HM 回执的编号传给该回执绑定的 HM 快照；重新导入或修复后重新查询。不得用同号、近似坐标猜测跨后端一一映射。\n\n需要薄壁分组时，再使用 `hypermesh_geometry_diagnostics`，根据当前局部尺寸登记筛查范围。`thin_groups=0` 仅表示该算法在给定范围未识别出分组；不能推出没有薄壁，更不能直接批准整个模型四面体化。分别说明各区域壳、梁、实体候选的证据与不确定性。梁截面提取或混合单元连接能力不在现有工具范围时，明确列出缺口。\n\n## 尺寸与试划\n\n网格后端默认 HyperMesh 2026；`hypermesh_backend_probe` 实测许可、版本和能力。不得因 HM 失败静默改用 Gmsh。\n\n先依据孔/曲率、局部宽度、材料跨度、保留特征和资源预算提出目标尺寸及最小尺寸，再调用 `geometry_mesh_size_assessment`。它返回面积估算、短于最小尺寸的边数和厚度候选分辨率。其数量不是硬上限；不能为满足预算自动忽略小特征。实体网格必须考虑厚度方向分辨率；壳网格先验证中面、连接和区域覆盖。诊断试划参数可自行登记为假设，无需让用户逐个填写普通算法参数。\n\n- 壳候选：`hypermesh_midsurface_mesh`。复杂融合薄壁可试 `extraction_method=direct_midmesh`；传入独立的 `element_size` / `min_element_size`。该方法的 `min_thickness/max_thickness` 不控制 direct-midmesh 提取，不能声称这个范围已被强制应用。\n- 实体候选：`hypermesh_volume_mesh`，仅在区域理想化已有依据时使用。不要拿统一粗四面体试图跨过薄壁。\n- 输出新路径，保留源 STEP；保留每轮 HM/BDF/JSON/日志及哈希。使用当前工具回执路径，不接续目录中碰巧找到的历史网格。\n\n将几何实测 span 原样传给工具，并采用与任务匹配的覆盖阈值。包围盒覆盖只是必要检查，不能证明所有内部构件完整。初次试划应限制时间、记录规模预算；详细质量检查可在离线产物上先执行，再导入 Viewer。\n\n## 定位、修复、再检查\n\n失败后先读本轮日志与 `failure_details`，判断失败阶段，不能只复述错误，也不能无条件全局重试。\n\n- CAD 自由边间隙：从 `hypermesh_geometry_inventory` 的 HM 编号定位，结合局部间隙与应保留特征，调用 `hypermesh_geometry_stitch_selected`。仅在新副本中缝合指定面之间的自由边；不塌缩小边。自由边减少、非流形不增加且面/实体计数保持才算拓扑改善，仍需复核关键特征。\n- 后续网格工具的 `input_file` 可使用本轮修复的 `.hm` 快照，沿用回执单位并设置 `cad_scale_factor=1`；不能重新导入原 STEP 丢掉修复。选择全新输出路径。\n- 全部共享边：不要继续盲目缝合；闭合拓扑不能证明无自交或能生成四面体。\n- BDF 坏单元：`mesh_quality_check` 返回坏单元编号、位置、簇；用 `hypermesh_shell_topology_diagnostics` 将 BDF 连通性映射到相应 HM，再按簇调用 `hypermesh_shell_local_remesh`，复查同一套质量条件。\n- 壳非流形边可能是 T 型连接，也可能是重叠。用 `mesh_assess_shell_junctions` 辅助诊断，不自动把所有非流形边豁免。\n- 体网格的 `post_mesh_cleanup` 只适用于有明确边界网格缺陷回执的情况。不得循环提高容差或抑制承力特征。\n\n同一原因最多两次有证据的修复尝试；每次必须有新的局部证据或不同的针对性修复。无改善就结束该分支，给出具体区域、残留缺陷和所缺能力。不能靠更换后端、放宽质量标准或删除构件把失败变成功。\n\n## 完成判据\n\n简明报告：识别了什么几何、采用何种理想化与尺寸、得到哪些文件、还有哪些问题。\n\n只有实际节点/单元非零、BDF 可解析、质量检查有明确标准且通过、覆盖与局部结构保持得到验证，才能说“网格检查通过”。需要显示时，调用 `viewer_import_model` 并核对当前文件及元素数。工具调用成功、bbox 通过或 Viewer 能显示，均不能替代上述检查。\n\n诊断完成、网格已生成、质量通过、区域完整性通过、Viewer 已载入分别报告。任何未完成项标为待确认；尤其不得将试划的中面网格称为已经完成工程理想化。\n",
+      "source": "D:\\CAE-AGENT-DSH\\skills\\cae-geometry-meshing\\SKILL.md",
+      "sha256": "691d7d938492463e8cfb9f8c68503edb427983973f097512a7d9dca14ac527f5",
+      "references": []
+    }
+  ],
+  "tools": [
+    {
+      "name": "cae_job_status",
+      "title": "cae_job_status",
+      "summary": "查询桌面端长任务状态。状态为 running/processing/succeeded/failed。",
+      "description": "查询桌面端长任务状态。状态为 running/processing/succeeded/failed。\n返回 progress、message、started_at/finished_at 以及有限长度的 stdout/stderr\n尾部，便于 Agent 在长任务中持续汇报而不是猜测是否完成。",
+      "signature": "def cae_job_status(job_id: str)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 204,
+      "sha256": "b1c3bec0d30ad200f30e26c7a95b68d520ed9d6e2f77b70788278d798a4312b0"
+    },
+    {
+      "name": "model_set_unit_system",
+      "title": "model_set_unit_system",
+      "summary": "设置当前 CAE 项目的单位制，供后续材料/载荷操作读取。",
+      "description": "设置当前 CAE 项目的单位制，供后续材料/载荷操作读取。\n支持 mm-N-MPa-tonne、m-N-Pa-kg 和 custom；数值工具不会把单位写死。",
+      "signature": "def model_set_unit_system(unit_system: str)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 212,
+      "sha256": "cb418601ca06eed84304a3c82570ece335c556c571d911e262c611918e1ce8a2"
+    },
+    {
+      "name": "model_summary",
+      "title": "model_summary",
+      "summary": "当前模型统计。除节点/单元/材料/属性/载荷/约束/工况外,",
+      "description": "当前模型统计。除节点/单元/材料/属性/载荷/约束/工况外,\n还返回 element_types、load_types、constraint_types、constraint_relations、\nunit_system、target_unit_system、source_unit_system、source_unit_known、\nunits_ready 以及线/点实体数量,\ncard_types 以及线/点实体数量,供模型自行判断后续操作,不依赖固定单元类型\n或固定几何。card_types 还包含尚未有专用适配器的 BDF 卡片；card_images\n提供每种卡片的数量、类别和一个原始字段样本，便于继续编排未知卡片。",
+      "signature": "def model_summary()",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 221,
+      "sha256": "f25c3e8d5356c1ed81239c69d805958419c78c57cda95795a7d7829a1d479740"
+    },
+    {
+      "name": "knowledge_search_cards",
+      "title": "knowledge_search_cards",
+      "summary": "确定性检索本机知识库四类 CAE 卡片，不调用 shell、不猜卡号。",
+      "description": "确定性检索本机知识库四类 CAE 卡片，不调用 shell、不猜卡号。\ncard_type 可为 term/mesh/material/condition；结果保留卡号、适用性、限制、\n审查状态、缺失输入与来源。空 review_status 必须按“未审查”处理。",
+      "signature": "def knowledge_search_cards(query: str, card_type: str='', limit: int=10)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 395,
+      "sha256": "e74c40297c3595359d5e98703e99f8f82d93582fa1d7339d35e1561f434d50a8"
+    },
+    {
+      "name": "knowledge_get_card",
+      "title": "knowledge_get_card",
+      "summary": "按 card_id 读取一张知识卡的完整原始字段，供网格、材料、载荷、约束与",
+      "description": "按 card_id 读取一张知识卡的完整原始字段，供网格、材料、载荷、约束与\n校核公式编排；返回源 CSV 路径，不把候选卡冒充已批准工程输入。",
+      "signature": "def knowledge_get_card(card_id: str)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 446,
+      "sha256": "b0c6e9853fddf23fb8934186f05a9a65f90e6409e816963bde30f887100380ca"
+    },
+    {
+      "name": "materials_create_from_card",
+      "title": "materials_create_from_card",
+      "summary": "从已确认的主材料卡原始 properties_json 建立 MAT1/属性，不手抄物性。",
+      "description": "从已确认的主材料卡原始 properties_json 建立 MAT1/属性，不手抄物性。\n必须显式确认产品形态/厚度适用性；未审查卡还须 allow_unreviewed=true，\n该标志只记录用户接受候选数据，不代表工程批准。返回换算明细和许用值候选。",
+      "signature": "def materials_create_from_card(card_id: str, thickness: float | str, property_type: str, product_form_confirmed: bool=False, allow_unreviewed: bool=False, material_id: int=0, unit_system: str='', property_id: int=0, elements: list[int] | None=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 470,
+      "sha256": "0fef3ceec290b250f945e0b579130a6aacdcc1b7f4e67b0bf2f3d90c54887e5c"
+    },
+    {
+      "name": "aerospace_static_validate_assembly",
+      "title": "aerospace_static_validate_assembly",
+      "summary": "求解前硬闸门：按已确认工况卡推导必须存在的 Nastran 载荷卡，检查当前",
+      "description": "求解前硬闸门：按已确认工况卡推导必须存在的 Nastran 载荷卡，检查当前\n模型的单位、网格、材料、属性、约束、载荷类型及区域探查凭据。未通过时\nmust_not_solve=true，禁止调用 solve_nastran。",
+      "signature": "def aerospace_static_validate_assembly(material_card_id: str, condition_card_id: str, resolved_inputs: dict, region_checks: list[dict], mesh_quality_receipt: dict | None=None, shell_junction_receipt: dict | None=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 692,
+      "sha256": "ed2b27210e97914765560f4a4039a17f759af7251dd69e445c86e56f6dc6846c"
+    },
+    {
+      "name": "model_query_cards",
+      "title": "model_query_cards",
+      "summary": "读取任意 BDF 卡片的规范化摘要和一个原始字段样本。",
+      "description": "读取任意 BDF 卡片的规范化摘要和一个原始字段样本。\nname/category 都是可选过滤器；category 支持 node、element、material、\nproperty、load、constraint、control、unknown。未知或暂未适配的厂商卡片\n仍会返回，不会被转换成虚构的几何、载荷或固定约束。",
+      "signature": "def model_query_cards(name: str='', category: str='', limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 789,
+      "sha256": "33afb63a3dc59e7ed356a8c0fa5f4b5b5f609ea99754b96b47e2ccea58de36c4"
+    },
+    {
+      "name": "workspace_find_models",
+      "title": "workspace_find_models",
+      "summary": "发现当前工作目录或指定目录中的 CAE 文件。",
+      "description": "发现当前工作目录或指定目录中的 CAE 文件。\n返回路径、格式、大小和修改时间；支持 BDF/DAT/NAS、STEP/STP/IGES/IGS\n以及 OP2。用户只说“导入当前目录里的模型”时先调用本工具，不要猜文件名。",
+      "signature": "def workspace_find_models(root: str='', recursive: bool=False, limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 799,
+      "sha256": "39ec58c7153923c21a72617c23232f9f3b0d5c801735a7a49aea4cc806d1b102"
+    },
+    {
+      "name": "model_query_elements",
+      "title": "model_query_elements",
+      "summary": "列出单元:每个单元返回 id、类型、PID、MID、节点和质心坐标。",
+      "description": "列出单元:每个单元返回 id、类型、PID、MID、节点和质心坐标。\n用于理解模型几何、定位满足条件的单元(例如找最大 X 坐标的单元)。\nlimit 控制返回数量上限。",
+      "signature": "def model_query_elements(limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 809,
+      "sha256": "46b035e4f9d874b1ca066581c8dd1c10dfce0bb4d66c42548d5d4f12bf542c49"
+    },
+    {
+      "name": "surface_query_extreme",
+      "title": "surface_query_extreme",
+      "summary": "查询任意已加载网格在 x/y/z 轴 min/max 端的外表面三角面。",
+      "description": "查询任意已加载网格在 x/y/z 轴 min/max 端的外表面三角面。\n返回每个面的单元 ID、三个角点 GRID、质心和法向；适用于 CTETRA 外皮和\nCTRIA3/CQUAD4 等壳单元。不要猜节点号，载荷/约束工具应消费本工具的结果。",
+      "signature": "def surface_query_extreme(axis: str, side: str, tolerance: float=0.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 817,
+      "sha256": "360bbadeab493990a94c728d7680f727d6b48820440a5d9a11ff007f4497ce22"
+    },
+    {
+      "name": "model_geometry_summary",
+      "title": "model_geometry_summary",
+      "summary": "当前模型的几何摘要:网格包围盒 bbox、三向跨度 span、主导轴 dominant_axis",
+      "description": "当前模型的几何摘要:网格包围盒 bbox、三向跨度 span、主导轴 dominant_axis\n(判结构主轴的实测依据)、节点/单元数、OCC 拓扑计数(实体/壳/面/边/顶点),\n以及逐面清单 faces(来自网格面映射 sidecar:每面 CAD 类型 Plane/Cylinder/...、\n面积、包围盒、质心、归属单元列表)。type 过滤面类型(如 \"cylinder\" 找孔面);\nlimit 限制返回面数。默认仅返回每面的成员计数和有限样本；只有确需完整\n节点/单元 ID 时才设 include_members=true。阶段一不要凭经验猜主轴或部位。",
+      "signature": "def model_geometry_summary(type: str='', limit: int=12, include_members: bool=False)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 826,
+      "sha256": "a358647e6a7cfa9deb37759b4cb8d7dcaf7d2848463885b5fc86a65a503ee5ee"
+    },
+    {
+      "name": "geometry_measure_thickness",
+      "title": "geometry_measure_thickness",
+      "summary": "从当前 OCC CAD 面生成可审查的厚度候选，不直接修改模型。",
+      "description": "从当前 OCC CAD 面生成可审查的厚度候选，不直接修改模型。\ncylinder 配对共轴圆柱半径差；plane 配对平行平面法向距离；auto 同时检查。\nrelative_limit 是候选厚度相对模型最大跨度的上限，用于排除相距很远的面。\n返回面号、测量方法与几何证据；候选不唯一时由 Agent 结合结构语义选择。",
+      "signature": "def geometry_measure_thickness(method: str='auto', relative_limit: float=0.1, axis_tolerance: float=0.0001)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 856,
+      "sha256": "abd017cb84e093ef4880d983a704e18b7bf9f74ced14af1f90134593019f5e0f"
+    },
+    {
+      "name": "aerospace_static_capability_assessment",
+      "title": "aerospace_static_capability_assessment",
+      "summary": "评估当前模型适合的前处理路线并登记能力缺口，不修改模型。",
+      "description": "评估当前模型适合的前处理路线并登记能力缺口，不修改模型。\n\nGmsh 负责离散化，不负责自动中面、工程连接、铺层、接触或结果判定。\nHyperMesh 端点或本机程序的存在只是“已配置/已安装”，不等于能力已验证。\n只有实际后端返回符合契约的 backend_receipt，才可解除对应方法阻塞。",
+      "signature": "def aerospace_static_capability_assessment(structure_hint: str, preferred_backend: str='automatic', backend_receipt: dict | None=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 935,
+      "sha256": "59d2018763e0baa08af84ee1a5df7073e813e4a4d1013c399ad144acf7f9392a"
+    },
+    {
+      "name": "geometry_feature_inventory",
+      "title": "geometry_feature_inventory",
+      "summary": "独立几何理解：自动读取 STEP 单位，OCC 测量面、边、曲率和局部材料跨度。",
+      "description": "独立几何理解：自动读取 STEP 单位，OCC 测量面、边、曲率和局部材料跨度。\n\n不读卡片、不求解、不划网格；Gmsh 仅承载 OCC 查询，不是网格后端回退。\n完整编号/坐标写入 JSON，返回精简摘要。跨度候选不是经过验证的壳厚。",
+      "signature": "def geometry_feature_inventory(input_file: str, timeout_seconds: float=600.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1060,
+      "sha256": "c2718dea25857a91a73b1b3cf43130aa45862aac95a606240eccf6e9627150a9"
+    },
+    {
+      "name": "geometry_inventory_query",
+      "title": "geometry_inventory_query",
+      "summary": "分页读取本轮几何清单的具体面、边或材料跨度，避免一次输出数万实体。",
+      "description": "分页读取本轮几何清单的具体面、边或材料跨度，避免一次输出数万实体。\n\ncollection: faces/edges/solids/material_chord_candidates；HM 回执使用 before 或 after 清单。\n编号必须遵循回执 namespace，禁止把 OCC 编号当 HM 编号。",
+      "signature": "def geometry_inventory_query(report: str, collection: str='faces', ids: list[int] | None=None, offset: int=0, limit: int=30)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1094,
+      "sha256": "113ec1ef1d9d2be0f91668054aadffc03e0e033b6197dcee9e8d047fe3db346e"
+    },
+    {
+      "name": "geometry_mesh_size_assessment",
+      "title": "geometry_mesh_size_assessment",
+      "summary": "按本轮实测面积估算网格规模、短边数量及候选厚度分辨率，不执行网格。",
+      "description": "按本轮实测面积估算网格规模、短边数量及候选厚度分辨率，不执行网格。\n\n两个尺寸使用 mm。面积/(sqrt(3)/4*h²) 仅为等边三角形均匀网格估计，不是实际数量上限。\n最小尺寸场景是假设全局加密的敏感性，不作为自动提高网格尺寸或删特征的理由。",
+      "signature": "def geometry_mesh_size_assessment(report: str, target_size: float, minimum_size: float, boundary_element_budget: int=1000000)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1120,
+      "sha256": "e9a6fc3ff8579ab63ba42300643f5ce9ff27f54a333700abb73d843e60100c12"
+    },
+    {
+      "name": "hypermesh_geometry_inventory",
+      "title": "hypermesh_geometry_inventory",
+      "summary": "HM2026 几何拓扑清单：面/边 ID、位置、自由边/非流形边，保存独立 HM 快照。",
+      "description": "HM2026 几何拓扑清单：面/边 ID、位置、自由边/非流形边，保存独立 HM 快照。\n\nSTEP 单位自动读取并转到 mm；默认 1e-5 mm 仅为可调整导入假设，非设计公差。\n接受已有 HM 快照，其单位继承上游回执。无需材料/工况/薄壁阈值；不修复、不划网格。",
+      "signature": "def hypermesh_geometry_inventory(input_file: str, import_tolerance: float=1e-05, executable: str='', timeout_seconds: float=600.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1169,
+      "sha256": "52398c16230b32b3094c96668ea708a7f2907f39a4ccb42604abc375bd357f78"
+    },
+    {
+      "name": "hypermesh_geometry_stitch_selected",
+      "title": "hypermesh_geometry_stitch_selected",
+      "summary": "在独立 HM 副本中缝合明确选择的面之自由边，返回前后拓扑和新快照。",
+      "description": "在独立 HM 副本中缝合明确选择的面之自由边，返回前后拓扑和新快照。\n\n必须使用该 input_hm 的 HM 面编号，tolerance 采用其模型长度单位并有局部间隙依据。\n不扩大选择、不塌缩小边、不删除特征；无改善返回 ok=false。特征保持仍需复核。",
+      "signature": "def hypermesh_geometry_stitch_selected(input_hm: str, surface_ids: list[int], tolerance: float, executable: str='', timeout_seconds: float=600.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1186,
+      "sha256": "2df1c5235c0c20b7d311c3d7f6b6735754e8ae78d39bae07185f60e82455182a"
+    },
+    {
+      "name": "hypermesh_backend_probe",
+      "title": "hypermesh_backend_probe",
+      "summary": "启动一次只读 HyperMesh batch 能力探测，不导入或修改模型。",
+      "description": "启动一次只读 HyperMesh batch 能力探测，不导入或修改模型。\n\n返回可传入 aerospace_static_capability_assessment.backend_receipt\n的 1.0 回执。可执行文件存在但 batch 启动/许可失败时不声明能力。",
+      "signature": "def hypermesh_backend_probe(executable: str='', timeout_seconds: float=60.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1203,
+      "sha256": "62350cfc4dde6732f46b567e46651e071132da9945c0a2bcb60cb03f4e6bc892"
+    },
+    {
+      "name": "hypermesh_geometry_diagnostics",
+      "title": "hypermesh_geometry_diagnostics",
+      "summary": "用 HyperMesh 2026 导入 STEP，并诊断分件、包围盒和薄壁分组，不划网格。",
+      "description": "用 HyperMesh 2026 导入 STEP，并诊断分件、包围盒和薄壁分组，不划网格。\n\nmax_thickness、导入清理容差和缩放因子必须由当前几何或已登记假设给出。\n返回每个组件的几何包围盒，以及 HM 识别的薄壁组厚度和主/副/厚度面计数，\n供 Agent 决定分件中面、梁化或实体路线；它不是自动中面成功回执。",
+      "signature": "def hypermesh_geometry_diagnostics(input_file: str, max_thickness: float | str, cleanup_tolerance: float | str, cad_scale_factor: float, thin_solid_ratio: float=0.5, unit_system: str='', executable: str='', timeout_seconds: float=600.0, component_limit: int=200, thin_group_limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1336,
+      "sha256": "4beff9c1f151b06a418df19ccd9220f4806e3b1be2f841e99e88c556585a0441"
+    },
+    {
+      "name": "hypermesh_midsurface_mesh",
+      "title": "hypermesh_midsurface_mesh",
+      "summary": "用本机 HyperMesh 2026 batch 执行 STEP -> 几何清理 -> 中面或直出 midmesh -> 壳网格 -> Nastran BDF。",
+      "description": "用本机 HyperMesh 2026 batch 执行 STEP -> 几何清理 -> 中面或直出 midmesh -> 壳网格 -> Nastran BDF。\n\n所有几何/网格数值都必须由 Agent 根据当前模型和卡片显式传入；\n本工具不内置机身厚度、尺寸或容差。返回实际实体计数、产物、日志和 SHA-256。",
+      "signature": "def hypermesh_midsurface_mesh(input_file: str, element_size: float | str, min_thickness: float | str, max_thickness: float | str, cleanup_tolerance: float | str, cad_scale_factor: float, expected_span: list[float], output_hm: str='', output_bdf: str='', element_type: str='mixed', unit_system: str='', executable: str='', timeout_seconds: float=1800.0, minimum_span_coverage: float=0.5, geometry_cleanup: bool=True, extraction_method: str='skin_offset', extraction_entity: str='solids', display_in_viewer: bool=True, midmesh_method: str='Extrusion', limited_topology_cleanup: bool=False, min_element_size: float | str='', proximity_suppression_threshold: float | str='', sharp_step_suppression_width: float | str='', flat_feature_suppression_level: int=0, post_mesh_cleanup: bool=False, quality_criteria: dict | None=None, cleanup_feature_angle: float=30.0, post_mesh_cleanup_iterations: int=1, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 1534,
+      "sha256": "aa5e83bcb6c1260098b9e227a0149c0d3262bdc5ca26fdf5ff06041d67b28bfa"
+    },
+    {
+      "name": "hypermesh_shell_topology_diagnostics",
+      "title": "hypermesh_shell_topology_diagnostics",
+      "summary": "在 HyperMesh 2026 当前 HM 数据库中诊断坏壳单元的组件及有限元拓扑范围。",
+      "description": "在 HyperMesh 2026 当前 HM 数据库中诊断坏壳单元的组件及有限元拓扑范围。\nelement_ids 来自 BDF 时必须传 input_bdf；工具按壳连接关系映射并同时返回\nbdf_element_id 与 hm_element_id，避免把 Nastran EID 当作 HM internal ID。",
+      "signature": "def hypermesh_shell_topology_diagnostics(input_hm: str, element_ids: list[int], input_bdf: str='', executable: str='', timeout_seconds: float=300.0, returned_id_limit: int=200, nearest_surface_limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2032,
+      "sha256": "f76e91453e0d643e1acf3c461800323bf2f7417206740fef31ec81fcf44905eb"
+    },
+    {
+      "name": "hypermesh_shell_create_component_groups",
+      "title": "hypermesh_shell_create_component_groups",
+      "summary": "把明确 HM internal element IDs 移入新组件，生成不覆盖输入的 HM/BDF 候选。",
+      "description": "把明确 HM internal element IDs 移入新组件，生成不覆盖输入的 HM/BDF 候选。\n\n本工具只建立组件载体，不自动赋厚度、材料或连接；元素总数或壳拓扑变化即拒绝。",
+      "signature": "def hypermesh_shell_create_component_groups(input_hm: str, input_bdf: str, groups: list[dict], output_hm: str, output_bdf: str, executable: str='', timeout_seconds: float=600.0, display_in_viewer: bool=True, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2264,
+      "sha256": "5c61f281f147954b8cb717c30620546853ea13581a89fdeebf820bdc7ca2b463"
+    },
+    {
+      "name": "hypermesh_shell_local_remesh",
+      "title": "hypermesh_shell_local_remesh",
+      "summary": "用 HyperMesh 2026 对当前运行 HM 数据库中的明确壳单元 ID 做局部重划分。",
+      "description": "用 HyperMesh 2026 对当前运行 HM 数据库中的明确壳单元 ID 做局部重划分。\n\n单元 ID 必须是拓扑诊断从同轮 BDF 唯一映射得到的 HM internal ID；工具不扫描\n旧目录、不扩大到全模型，也不放宽显式网格卡阈值。输出重新经过全模型覆盖和质量检查。",
+      "signature": "def hypermesh_shell_local_remesh(input_hm: str, input_bdf: str, element_ids: list[int], element_size: float | str, expected_span: list[float], quality_criteria: dict, output_hm: str, output_bdf: str, element_type: str='mixed', unit_system: str='', feature_angle: float=30.0, vertex_angle: float=30.0, algorithm: int=3, selection_expansion: str='none', max_expanded_elements: int=1000, minimum_span_coverage: float=0.5, executable: str='', timeout_seconds: float=1800.0, display_in_viewer: bool=True, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2380,
+      "sha256": "0502625130b162ed27e4dae062d36c641274b5f591046ed6401b7e4340ca02f3"
+    },
+    {
+      "name": "hypermesh_volume_mesh",
+      "title": "hypermesh_volume_mesh",
+      "summary": "用 HyperMesh 2026 执行 STEP -> 几何清理 -> 实体四面体网格 -> Nastran BDF。",
+      "description": "用 HyperMesh 2026 执行 STEP -> 几何清理 -> 实体四面体网格 -> Nastran BDF。\n\n这是无法由壳中面路线覆盖的实体理想化分支。目标/最小单元尺寸、清理容差和\nCAD 缩放因子必须由调用方依据当前几何、网格卡或登记假设显式提供；本工具\n不创建材料、属性、载荷或约束。",
+      "signature": "def hypermesh_volume_mesh(input_file: str, element_size: float | str, min_element_size: float | str, cleanup_tolerance: float | str, cad_scale_factor: float, expected_span: list[float], output_hm: str='', output_bdf: str='', unit_system: str='', executable: str='', timeout_seconds: float=1800.0, minimum_span_coverage: float=0.5, geometry_cleanup: bool=True, display_in_viewer: bool=True, limited_topology_cleanup: bool=False, proximity_suppression_threshold: float | str='', sharp_step_suppression_width: float | str='', flat_feature_suppression_level: int=0, post_mesh_cleanup: bool=False, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2569,
+      "sha256": "6939d192b56c93aba431a31cd304d1d6ddc5da88b590a5cec56b8370d11525e1"
+    },
+    {
+      "name": "aerospace_static_prepare",
+      "title": "aerospace_static_prepare",
+      "summary": "航空静强度流程的强制准备/确认闸门：先真实导入 STEP 并读取 OCC 几何，",
+      "description": "航空静强度流程的强制准备/确认闸门：先真实导入 STEP 并读取 OCC 几何，\n再从本机卡库检索术语卡及其关联网格/材料/工况卡。automatic=true 时按术语关联候选自动编排；仅在候选为空、卡字段无法闭合或适用性冲突时返回 requires_confirmation=true。\n本工具绝不划网格、施加载荷或启动求解。",
+      "signature": "def aerospace_static_prepare(input_file: str='', structure_hint: str='', material_card_id: str='', condition_card_id: str='', automatic: bool=True, model_path: str='', term_query: str='', ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2848,
+      "sha256": "6733070920bd0ca1f72352416006f2b1c145f7e575c788f406bf0631ce768460"
+    },
+    {
+      "name": "model_query_region",
+      "title": "model_query_region",
+      "summary": "解析一个区域选择器,返回命中的节点/单元/CAD 面,不做任何施加。",
+      "description": "解析一个区域选择器,返回命中的节点/单元/CAD 面,不做任何施加。\nregion 支持(可同时给多个键,取并集):\n  {\"face_ids\":[1,7]}                          按 CAD 面 id(见 model_geometry_summary);\n  {\"surface\":{\"type\":\"cylinder\"}}             按曲面类型(可加 radius_min/radius_max);\n  {\"plane\":{\"axis\":\"x\",\"coordinate\":50.0,\"tolerance\":0.1}}  按任意坐标平面;\n  {\"box\":{\"min\":[x,y,z],\"max\":[x,y,z]}}       按空间包围盒;\n  {\"nodes\":[..]} / {\"elements\":[..]}          显式 id 列表。\n默认返回总计数与有限样本，避免大型模型把数万个 ID 送过 HTTP；需要完整\nID 时显式设 include_ids=true 并指定 limit。施加前先核对区域。",
+      "signature": "def model_query_region(region: dict, include_ids: bool=False, limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 2990,
+      "sha256": "26919ac638e6dd802656d82517ec4bf9f7524597634d09f7763bd652bd2c69de"
+    },
+    {
+      "name": "loads_apply_region_pressure",
+      "title": "loads_apply_region_pressure",
+      "summary": "在任意区域上施加压力(PLOAD2,逐壳单元)。region 选择器见 model_query_region:",
+      "description": "在任意区域上施加压力(PLOAD2,逐壳单元)。region 选择器见 model_query_region:\n支持 CAD 面(face_ids)、曲面类型(surface.type=cylinder 等,即孔面/圆角)、\n任意坐标平面(plane)、包围盒(box)、显式单元。压强按模型单位制换算。",
+      "signature": "def loads_apply_region_pressure(region: dict, magnitude: float | str, set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3006,
+      "sha256": "0f89a3c7eccfec02b630dd0ba9fcee359eb1ef60c30d9e92f5835c4d217518eb"
+    },
+    {
+      "name": "loads_apply_region_force",
+      "title": "loads_apply_region_force",
+      "summary": "在任意区域的节点上施加集中力(FORCE)。region 选择器见 model_query_region。",
+      "description": "在任意区域的节点上施加集中力(FORCE)。region 选择器见 model_query_region。\ndistribution=\"total\" 时 magnitude 是合力、均摊到每个节点(默认);\n\"per_node\" 时每个节点各受 magnitude。vector 是方向 [x,y,z]。",
+      "signature": "def loads_apply_region_force(region: dict, vector: list[float], magnitude: float | str, distribution: str='total', set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3019,
+      "sha256": "2037d2d22ad3e37a3344eed859b2ee26ca6be57671b3e8bb30a019efe1ef493a"
+    },
+    {
+      "name": "loads_apply_region_moment",
+      "title": "loads_apply_region_moment",
+      "summary": "在任意区域节点上施加 MOMENT。distribution=\"total\" 表示 magnitude 是",
+      "description": "在任意区域节点上施加 MOMENT。distribution=\"total\" 表示 magnitude 是\n区域合力矩并均摊到节点；\"per_node\" 表示每个节点均施加该幅值。",
+      "signature": "def loads_apply_region_moment(region: dict, vector: list[float], magnitude: float | str, distribution: str='total', set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3034,
+      "sha256": "0dd6be84068ead7cb59bfd7db3b983f3a0088145b5330fb3c78b0d105163351b"
+    },
+    {
+      "name": "loads_apply_region_constraint",
+      "title": "loads_apply_region_constraint",
+      "summary": "在任意区域的节点上施加位移约束(SPC)。region 选择器见 model_query_region:",
+      "description": "在任意区域的节点上施加位移约束(SPC)。region 选择器见 model_query_region:\n支持按 CAD 面、曲面类型、任意坐标平面、包围盒或显式节点定位约束部位\n(如某个框站位截面、对接法兰),不限于轴向极值端面。dofs 是 1-6 数字串。",
+      "signature": "def loads_apply_region_constraint(region: dict, dofs: str='123456', set_id: int=0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3048,
+      "sha256": "c98eb8b5e9f9f80a9d382a6cefd788a3679c9c88d6179d66c26d06e67267843c"
+    },
+    {
+      "name": "selection_get",
+      "title": "selection_get",
+      "summary": "读取用户在视图里当前选中的节点和单元(以及单元面的三个角点节点)。",
+      "description": "读取用户在视图里当前选中的节点和单元(以及单元面的三个角点节点)。",
+      "signature": "def selection_get()",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3058,
+      "sha256": "cfa42c36f6e40b2b046f30ebb08c38d1c85b02c00e7251af2c63980544bc486e"
+    },
+    {
+      "name": "selection_set",
+      "title": "selection_set",
+      "summary": "在视图里设置选中集(nodes/elements 是 GRID 或单元 id 列表),会高亮显示。",
+      "description": "在视图里设置选中集(nodes/elements 是 GRID 或单元 id 列表),会高亮显示。",
+      "signature": "def selection_set(nodes: list[int], elements: list[int])",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3064,
+      "sha256": "b57129613ef19eb423e71f08ee7701e618f8acdd0ff9b419020bba1860543072"
+    },
+    {
+      "name": "selection_clear",
+      "title": "selection_clear",
+      "summary": "清除视图中的选中集。",
+      "description": "清除视图中的选中集。",
+      "signature": "def selection_clear()",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3070,
+      "sha256": "89453341a52e7ef6a44e1c072b2d6c33d59620d3783105e16b0d952a3f4cb334"
+    },
+    {
+      "name": "loads_apply_force",
+      "title": "loads_apply_force",
+      "summary": "在给定节点上施加集中力 FORCE。vector 是方向 [x,y,z](自动归一化),magnitude",
+      "description": "在给定节点上施加集中力 FORCE。vector 是方向 [x,y,z](自动归一化),magnitude\n使用当前模型单位制；nodes 传空列表则作用于当前选中节点。set_id=0 自动分配。",
+      "signature": "def loads_apply_force(nodes: list[int], vector: list[float], magnitude: float | str, set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3076,
+      "sha256": "66e737918e0bb9898bdfbbdb4fb8f74bef9614bcc30db6f4dfd9309042f7ce61"
+    },
+    {
+      "name": "loads_apply_moment",
+      "title": "loads_apply_moment",
+      "summary": "在给定节点上施加集中力矩 MOMENT。vector 是方向 [x,y,z],magnitude 是力矩大小。",
+      "description": "在给定节点上施加集中力矩 MOMENT。vector 是方向 [x,y,z],magnitude 是力矩大小。",
+      "signature": "def loads_apply_moment(nodes: list[int], vector: list[float], magnitude: float | str, set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3088,
+      "sha256": "f6d5874d32dcd63815ebff33cc5cd0ef41c603a45a74b66ed89adbe466115b21"
+    },
+    {
+      "name": "loads_apply_gravity",
+      "title": "loads_apply_gravity",
+      "summary": "施加全局重力/惯性过载 GRAV。vector 是加速度方向 [x,y,z](自动归一化),",
+      "description": "施加全局重力/惯性过载 GRAV。vector 是加速度方向 [x,y,z](自动归一化),\nmagnitude 是加速度幅值(如 9810 mm/s^2),方向语义为\"重力指向的方向\"\n(例如重力向下传 vector=[0,0,-1])。set_id=0 时自动并入模型现有载荷集,\n与压力合成单一 SUBCASE(机动工况 n·g 过载 + 气动载荷的标准装配)。",
+      "signature": "def loads_apply_gravity(vector: list[float], magnitude: float | str, set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3099,
+      "sha256": "ed651a8eb4f26d80985e22bbdae7b9d9f29a650818b471669065084891950238"
+    },
+    {
+      "name": "loads_apply_pressure",
+      "title": "loads_apply_pressure",
+      "summary": "在给定单元上施加压力。数值使用当前模型单位制，不在工具内假设 MPa。",
+      "description": "在给定单元上施加压力。数值使用当前模型单位制，不在工具内假设 MPa。\n仅适用于壳单元或已明确选择的非实体单元面；实体 CTETRA 外表面必须使用\nloads_apply_surface_pressure(axis, side, magnitude)，不能仅传 elements。\nelements 传空列表则作用于当前选中单元及其面。",
+      "signature": "def loads_apply_pressure(elements: list[int], magnitude: float | str, set_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3113,
+      "sha256": "74faa081501c232264d1489b5f7954234aebf6637d0663b4fb176da10e6b735d"
+    },
+    {
+      "name": "loads_apply_surface_pressure",
+      "title": "loads_apply_surface_pressure",
+      "summary": "在桌面端按几何极值面施加压力，避免跨 HTTP 传输完整面列表。",
+      "description": "在桌面端按几何极值面施加压力，避免跨 HTTP 传输完整面列表。",
+      "signature": "def loads_apply_surface_pressure(axis: str, side: str, magnitude: float | str, set_id: int=0, tolerance: float=0.0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3127,
+      "sha256": "c01c1289c08977f11f35be85854d10c62c8698791cabba192e61ed41200b3d44"
+    },
+    {
+      "name": "loads_apply_constraint",
+      "title": "loads_apply_constraint",
+      "summary": "在给定节点上施加位移约束 SPC。dofs 是 1-6 数字串(123=平移全约束,123456=全固定)。",
+      "description": "在给定节点上施加位移约束 SPC。dofs 是 1-6 数字串(123=平移全约束,123456=全固定)。\nnodes 传空列表则作用于当前选中节点。",
+      "signature": "def loads_apply_constraint(nodes: list[int], dofs: str='123456', set_id: int=0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3139,
+      "sha256": "4ff54efe9b03dacbbf6fa1d51710249aca3359c7db90058996e8e26626571237"
+    },
+    {
+      "name": "loads_apply_surface_constraint",
+      "title": "loads_apply_surface_constraint",
+      "summary": "在桌面端按几何极值面收集 GRID 并施加 SPC1，避免超大节点数组请求。",
+      "description": "在桌面端按几何极值面收集 GRID 并施加 SPC1，避免超大节点数组请求。",
+      "signature": "def loads_apply_surface_constraint(axis: str, side: str, dofs: str='123456', set_id: int=0, tolerance: float=0.0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3148,
+      "sha256": "f2a3cedf3814c2f57c68c9c5ad45f48cc98142bba2f6e9758ce7a45f234cc265"
+    },
+    {
+      "name": "connections_create_rbe2",
+      "title": "connections_create_rbe2",
+      "summary": "创建 Nastran RBE2。independent_node 是独立 GRID，dependent_nodes 是从属 GRID，",
+      "description": "创建 Nastran RBE2。independent_node 是独立 GRID，dependent_nodes 是从属 GRID，\ndofs 为从属自由度。节点集合与自由度必须来自真实连接语义；不得用 RBE2 冒充接触、\n螺栓柔度或 CBUSH。element_id=0 时由桌面端在结构/刚性单元命名空间内自动分配。",
+      "signature": "def connections_create_rbe2(independent_node: int, dependent_nodes: list[int], dofs: str='123456', element_id: int=0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3157,
+      "sha256": "88c794199e21e05129bdad8da20dd253e68832736f2d5245570feb5825e832da"
+    },
+    {
+      "name": "connections_create_rbe3",
+      "title": "connections_create_rbe3",
+      "summary": "创建 Nastran RBE3 插值蜘蛛。reference_node/reference_dofs 是受插值的参考 GRID",
+      "description": "创建 Nastran RBE3 插值蜘蛛。reference_node/reference_dofs 是受插值的参考 GRID\n与自由度；independent_terms 每项必须包含 node、dofs、weight。权重和节点区域必须\n来自真实载荷分配语义；该工具不创建 UM 项，也不得用于刚性连接或接触替代。",
+      "signature": "def connections_create_rbe3(reference_node: int, independent_terms: list[dict], reference_dofs: str='123456', element_id: int=0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3184,
+      "sha256": "8541e6f4c289befd75e6a78acb6af8eeecd492a75bc5d893803cce4945255c84"
+    },
+    {
+      "name": "connections_create_cbush",
+      "title": "connections_create_cbush",
+      "summary": "创建线性静力 CBUSH + PBUSH(K)。nodes 是 GA/GB；orientation 是基本坐标系",
+      "description": "创建线性静力 CBUSH + PBUSH(K)。nodes 是 GA/GB；orientation 是基本坐标系\nX1/X2/X3；stiffness 为 K1..K6，前三项使用力/长度单位，后三项使用力矩/rad。\n刚度、方向和接口节点必须来自连接定义或有审计记录的假设；不表示接触或预紧。",
+      "signature": "def connections_create_cbush(nodes: list[int], orientation: list[float], stiffness: list[float | str], property_id: int=0, element_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3226,
+      "sha256": "64e1fe5d2ed68e046c4f5429c6293bc422e304f215d5d26c01ac854a795e5c63"
+    },
+    {
+      "name": "materials_create_mat8",
+      "title": "materials_create_mat8",
+      "summary": "创建正交各向异性 MAT8。模量/强度和密度必须来自复材材料卡、试验或",
+      "description": "创建正交各向异性 MAT8。模量/强度和密度必须来自复材材料卡、试验或\n有审计记录的暂定输入；不会从各向同性 MAT1 推导。所有量转换到当前模型单位制。",
+      "signature": "def materials_create_mat8(name: str, e1: float | str, e2: float | str, nu12: float, g12: float | str, g1z: float | str=0.0, g2z: float | str=0.0, density: float | str=0.0, xt: float | str=0.0, xc: float | str=0.0, yt: float | str=0.0, yc: float | str=0.0, shear_strength: float | str=0.0, material_id: int=0, unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3272,
+      "sha256": "080b4e30369f630c75f0c7f2c02b49e6c31987cf434190b0944a4f9928514a8b"
+    },
+    {
+      "name": "properties_create_pcomp",
+      "title": "properties_create_pcomp",
+      "summary": "创建 PCOMP 并赋给明确的壳单元。每层必须给 material_id、thickness、angle，",
+      "description": "创建 PCOMP 并赋给明确的壳单元。每层必须给 material_id、thickness、angle，\n可选 stress_output=YES/NO。铺层顺序按列表自下而上保留；不会猜测对称铺层。",
+      "signature": "def properties_create_pcomp(plies: list[dict], elements: list[int], property_id: int=0, z0: float | str=0.0, nsm: float=0.0, failure_theory: str='', laminate_option: str='', unit_system: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3321,
+      "sha256": "1820875f825a13c550fd5af18d23703ada4332a6a5e5d4ebca75150a8dff4179"
+    },
+    {
+      "name": "materials_assign",
+      "title": "materials_assign",
+      "summary": "把材料 MID=material_id 指派给单元(elements 列表)或属性(property_id)。",
+      "description": "把材料 MID=material_id 指派给单元(elements 列表)或属性(property_id)。\n二选一;都不给则作用于当前选中单元所属的属性。",
+      "signature": "def materials_assign(material_id: int, elements: list[int] | None=None, property_id: int=0)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3377,
+      "sha256": "d9e7449a9e99b33c3fba65d7f6986e04df6875e7301714ffbced247b7d9f08b7"
+    },
+    {
+      "name": "materials_create",
+      "title": "materials_create",
+      "summary": "创建或更新一个 MAT1，并为当前模型中缺失的属性卡建立 PSOLID/PSHELL",
+      "description": "创建或更新一个 MAT1，并为当前模型中缺失的属性卡建立 PSOLID/PSHELL\n绑定。property_type 可用自然别名 solid/shell 或 BDF 名 PSOLID/PSHELL；\n数值使用模型单位制；工具不会假定固定 MID/PID，material_id=0 表示自动分配。\n指定 elements 时按 BDF 单元 ID 建立隔离的新 PID，只修改该区域；property_id=0 自动分配。",
+      "signature": "def materials_create(name: str, young_modulus: float | str, poisson_ratio: float, density: float | str=0.0, material_id: int=0, property_type: str='', thickness: float | str=1.0, unit_system: str='', property_id: int=0, elements: list[int] | None=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3390,
+      "sha256": "8820fc4ecbb0b80064622380b52a5451b605ad353e112413d1c685126da9622d"
+    },
+    {
+      "name": "bdf_validate",
+      "title": "bdf_validate",
+      "summary": "在桌面端对当前模型或指定 BDF 执行求解前语义预检。",
+      "description": "在桌面端对当前模型或指定 BDF 执行求解前语义预检。\n返回结构化错误/警告；存在错误或未确认的警告时不会启动 Nastran。\nallow_warnings=True 仅表示调用方已确认单位等警告，不会修改 BDF 数值。",
+      "signature": "def bdf_validate(path: str='', allow_warnings: bool=False, issue_limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3417,
+      "sha256": "9fdf4dba80545c8b7aff5dfd10463b30afcf1fcbf892aa38c6f1567a891d0be6"
+    },
+    {
+      "name": "model_export_bdf",
+      "title": "model_export_bdf",
+      "summary": "把当前模型(含所有施加的载荷/约束/材料修改)导出为 BDF 文件。",
+      "description": "把当前模型(含所有施加的载荷/约束/材料修改)导出为 BDF 文件。\npath 为空时导出到模型目录下的 *_edited.bdf。返回实际写出的路径。",
+      "signature": "def model_export_bdf(path: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3444,
+      "sha256": "4a0e8a11d68bcc4a828d6e3deb3dd98d5b52da91b1afd7fc3f7d18ee1654f67e"
+    },
+    {
+      "name": "mesh_with_gmsh",
+      "title": "mesh_with_gmsh",
+      "summary": "用 GMSH 对 CAD 几何(STEP/IGES)划分网格并写为 BDF,然后自动载入显示区。",
+      "description": "用 GMSH 对 CAD 几何(STEP/IGES)划分网格并写为 BDF,然后自动载入显示区。\n对封闭实体默认 dim=3 四面体；dim=2 可显式请求壳网格；size 是目标网格尺寸(0=自动)。",
+      "signature": "def mesh_with_gmsh(input_file: str, dim: int=3, size: float | str=0.0, output: str='', unit_system: str='', local_sizes: list[dict] | None=None, algorithm: str='auto', ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3451,
+      "sha256": "ee6e98afb7119d4899e156236b41cb044917b4264ef3c4feac3a89d59dd246b5"
+    },
+    {
+      "name": "mesh_quality_check",
+      "title": "mesh_quality_check",
+      "summary": "按网格卡给出的 criteria 检查 BDF 基础单元几何质量。",
+      "description": "按网格卡给出的 criteria 检查 BDF 基础单元几何质量。\n支持 CTRIA3/CQUAD4/CTETRA；criteria 可含 min_angle、max_angle、\nmax_aspect_ratio、max_warpage、max_edge_ratio、min_measure。阈值必须来自当前网格卡，\n本工具不内置通过标准。",
+      "signature": "def mesh_quality_check(path: str, criteria: dict | None=None, violation_limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3482,
+      "sha256": "a0d28695a93d2b6f6be001f23a31dc7e99dbbe37bffc287097effbb95ee4e9d9"
+    },
+    {
+      "name": "mesh_assess_shell_junctions",
+      "title": "mesh_assess_shell_junctions",
+      "summary": "按壳片连续性与显式角度判据识别接头候选；只生成 provisional 分类。",
+      "description": "按壳片连续性与显式角度判据识别接头候选；只生成 provisional 分类。\n\n优先使用质量回执中由同轮网格质量工具计算的 junction_pattern（壳片\n连续/终止/叠层几何模式）；无该字段的旧回执回退到纯角度计数，保持向后\n兼容。叠层（stack_overlap）单独标为缺陷，必须修复，不可接受为结构\n接头；本工具不等同于连接批准，也不删除、合并或创建单元。",
+      "signature": "def mesh_assess_shell_junctions(mesh_quality_receipt: dict, coplanar_tolerance_deg: float, branch_min_angle_deg: float, returned_edge_limit: int=200)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3513,
+      "sha256": "b25547124a1a48083e0cd059a215797076e3daba3d8d3cd45955a2af93cb6fe2"
+    },
+    {
+      "name": "mesh_accept_shell_junction_assessment",
+      "title": "mesh_accept_shell_junction_assessment",
+      "summary": "在所有非流形边均为合法结构接头候选时生成受控分析接受回执。",
+      "description": "在所有非流形边均为合法结构接头候选时生成受控分析接受回执。\n\nsource_kind 只能是 card、user_input 或 authorized_assumption；该回执允许线性分析\n保留共享节点 T 接/四向交汇/角接/多分支接头，但不是工程批准或适航结论。\n存在任何 unresolved 或叠层缺陷（stack_overlap_defect）时拒绝。",
+      "signature": "def mesh_accept_shell_junction_assessment(assessment: dict, basis: str, source_kind: str, source_ref: str)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3669,
+      "sha256": "b78e35032d80c309e9d239a15e1ae17d6e72602740e9d97f82a602dfd2388b56"
+    },
+    {
+      "name": "hypermesh_generate_midsurface_mesh_levels",
+      "title": "hypermesh_generate_midsurface_mesh_levels",
+      "summary": "从同一 STEP 用 HyperMesh 2026 独立生成 2–6 个壳中面网格等级。",
+      "description": "从同一 STEP 用 HyperMesh 2026 独立生成 2–6 个壳中面网格等级。\n\nmesh_parameters 使用 hypermesh_midsurface_mesh 的其余显式参数。每级输出独立\nHM/BDF、跨度/质量/哈希回执；任一级失败即停止。工具只生成网格，不复制粗网格\n的材料、载荷、约束或连接，后续必须逐级重新建立并验证这些语义。",
+      "signature": "def hypermesh_generate_midsurface_mesh_levels(input_file: str, mesh_sizes: list[float | str], output_dir: str, mesh_parameters: dict, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3705,
+      "sha256": "cfb4e4ff274a1a201690a3aaad67dbe1f3caa997be4f8d0db410658eae09a559"
+    },
+    {
+      "name": "airframe_static_preprocess",
+      "title": "airframe_static_preprocess",
+      "summary": "按结构实际主轴向两端面生成机身二维壳静力学 BDF，并载入右侧 CAE 视图。",
+      "description": "按结构实际主轴向两端面生成机身二维壳静力学 BDF，并载入右侧 CAE 视图。\n【重要规范】：严禁使用默认值！调用方（大模型）必须首先通过几何探查工具测量模型的真实主轴（axis: x/y/z）、\n确定约束端与加载端（load_side/constraint_side: min/max）、根据截面测量决定壳厚（thickness mm）、\n根据网格策略卡计算网格尺寸（size mm）、根据材料卡提取弹性常数（young_modulus, poisson_ratio, density）、\n根据工况卡计算真实设计压差或载荷（pressure MPa）。全部关键工程参数必须显式传入！",
+      "signature": "def airframe_static_preprocess(input_file: str, axis: str, load_side: str, constraint_side: str, pressure: float | str, young_modulus: float | str, poisson_ratio: float, density: float | str, thickness: float | str, size: float | str, output: str='', unit_system: str='', backend: str='hypermesh', ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3806,
+      "sha256": "a23dfe733e9de907438e2efcff1ef56b54f253b8d03d21865d70c311d4513e9d"
+    },
+    {
+      "name": "airframe_static_pipeline",
+      "title": "airframe_static_pipeline",
+      "summary": "Run the complete CAD-to-Nastran airframe workflow in ordered stages.",
+      "description": "Run the complete CAD-to-Nastran airframe workflow in ordered stages.\n\n【工程严肃性强约束】：无任何内置假定数值！\n调用方（AI Agent）必须在调用本工具前完成几何探查与知识库对齐，显式提供：\n1. axis: 几何主轴方向 ('x', 'y', 或 'z')；\n2. load_side / constraint_side: 载荷与固定约束端 ('min' 或 'max')；\n3. thickness: 基于实体测量的截面等效厚度 (mm)；\n4. size: 基于网格策略卡的特征尺寸 (mm)；\n5. pressure: 基于工况卡的气压压强 (MPa)；\n6. young_modulus / poisson_ratio / density: 基于材料卡的物性常数。",
+      "signature": "def airframe_static_pipeline(input_file: str, axis: str, load_side: str, constraint_side: str, pressure: float | str, young_modulus: float | str, poisson_ratio: float, density: float | str, thickness: float | str, size: float | str, output: str='', unit_system: str='', result_field: str='von_mises', backend: str='hypermesh', ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 3871,
+      "sha256": "080e55f6e2f843ae9b502558a29769265f8dc9bcc02d531b61dbff7bcf1ed0d5"
+    },
+    {
+      "name": "solve_nastran",
+      "title": "solve_nastran",
+      "summary": "先执行 bdf_validate，再用本机 MSC Nastran 求解。",
+      "description": "先执行 bdf_validate，再用本机 MSC Nastran 求解。\nBDF 有语义错误或未确认的警告时不会启动求解器；成功后若生成 OP2\n会自动导入并显示请求的位移或 von Mises 应力云图。",
+      "signature": "def solve_nastran(bdf: str='', allow_warnings: bool=False, result_field: str='displacement', ply_index: int=0, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4020,
+      "sha256": "952071aca5a24a019e3b926d4cc9e34fbb486c8335a3a0529f7644a804d84a0b"
+    },
+    {
+      "name": "aerospace_static_solve",
+      "title": "aerospace_static_solve",
+      "summary": "仅供 cae-aerospace-static-analysis 的受控求解入口。先重新载入指定 BDF，",
+      "description": "仅供 cae-aerospace-static-analysis 的受控求解入口。先重新载入指定 BDF，\n再对同一文件对应的桌面模型执行知识卡驱动装配硬校验；缺材料/属性/约束、\n工况所需载荷类型或区域探查凭据时不会启动 Nastran。成功还要求 F06 无\nFATAL 且 OP2 含位移与 von Mises 应力。",
+      "signature": "def aerospace_static_solve(bdf: str, material_card_id: str, condition_card_id: str, resolved_inputs: dict, region_checks: list[dict], mesh_quality_receipt: dict | None=None, shell_junction_receipt: dict | None=None, allow_warnings: bool=False, result_field: str='von_mises', ply_index: int=0, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4042,
+      "sha256": "7b03ba595d210bd85089df7646b795981ed68a341a9da8066f58441699c89e70"
+    },
+    {
+      "name": "results_import_op2",
+      "title": "results_import_op2",
+      "summary": "导入 OP2 并显示位移、整体 von Mises、壳上/下表面或指定复材层应力云图。",
+      "description": "导入 OP2 并显示位移、整体 von Mises、壳上/下表面或指定复材层应力云图。\n复材层使用 result_field=composite_ply_von_mises 和正整数 ply_index。",
+      "signature": "def results_import_op2(path: str, result_field: str='displacement', bdf: str='', ply_index: int=0, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4109,
+      "sha256": "ce357c2d24a3a572c16513d5e66c124cb168cc96720195a1432a7a3670efcaa8"
+    },
+    {
+      "name": "results_query_diagnostics",
+      "title": "results_query_diagnostics",
+      "summary": "读取已解码 OP2 的应力分布与 OLOAD/SPCFORCES 平衡诊断。",
+      "description": "读取已解码 OP2 的应力分布与 OLOAD/SPCFORCES 平衡诊断。\npath 可为 OP2 或其 .results.json；allowable>0 时按当前应力单位统计超限单元。\n可选 f06 用于检查刚体/奇异/自动约束信号；convergence_series 可传入至少\n两级网格的 mesh_size、max_stress、p99_9_stress 和 max_displacement，判断\n收敛或峰值随细化发散。诊断是筛查证据，不替代工程判定。",
+      "signature": "def results_query_diagnostics(path: str, allowable: float | str=0.0, unit_system: str='', f06: str='', convergence_series: list[dict] | None=None, convergence_tolerance: float=0.05)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4129,
+      "sha256": "ce5d66f3cccea0ce5e78ddc6cb1e733975e922855b400e61c8eadba1a9966306"
+    },
+    {
+      "name": "results_assess_mesh_convergence",
+      "title": "results_assess_mesh_convergence",
+      "summary": "从真实 BDF/F06/OP2 sidecar 和同文件质量/装配回执评估多级网格收敛。",
+      "description": "从真实 BDF/F06/OP2 sidecar 和同文件质量/装配回执评估多级网格收敛。\n\n每级必须提供 mesh_size、bdf、op2、f06、mesh_quality_receipt 和\nassembly_gate。路径/哈希或同名求解血缘不一致、质量/装配闸门失败、F06\n奇异或 OP2 缺应力/位移时拒绝。至少三级才能确认峰值单调发散。",
+      "signature": "def results_assess_mesh_convergence(cases: list[dict], convergence_tolerance: float=0.05)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4278,
+      "sha256": "7d3ffd193727e500d3a54d31c2a713719614a7666c9b24645b0a9a11e160eb1d"
+    },
+    {
+      "name": "aerospace_static_convergence_solve",
+      "title": "aerospace_static_convergence_solve",
+      "summary": "顺序求解 2–6 个已独立装配并通过质量回执的网格等级，再做血缘收敛评估。",
+      "description": "顺序求解 2–6 个已独立装配并通过质量回执的网格等级，再做血缘收敛评估。\n\n每级参数与 aerospace_static_solve 相同，另需 mesh_size。工具不会把一个网格\n的节点载荷/约束复制到另一个网格；每一级必须已有自己的区域证据与装配回执。",
+      "signature": "def aerospace_static_convergence_solve(cases: list[dict], convergence_tolerance: float=0.05, result_field: str='von_mises', ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4375,
+      "sha256": "e376e32812d554fbe67e4ec4b9c9a1c9fdd063b9cad348cf42bc25e3895e9cb5"
+    },
+    {
+      "name": "results_clear",
+      "title": "results_clear",
+      "summary": "清除当前云图,恢复普通着色。",
+      "description": "清除当前云图,恢复普通着色。",
+      "signature": "def results_clear()",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4460,
+      "sha256": "4234a00d62b50015792163bfd292e794a0e6a54e1a6c1720d63e098ce524ba9c"
+    },
+    {
+      "name": "viewer_import_model",
+      "title": "viewer_import_model",
+      "summary": "在显示区打开模型文件(BDF/STEP/IGES),并等待导入任务完成。",
+      "description": "在显示区打开模型文件(BDF/STEP/IGES),并等待导入任务完成。",
+      "signature": "def viewer_import_model(path: str, ctx: Context=None)",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4466,
+      "sha256": "6b43b15b1000bb2a01f81dc7bbbabf14b4b59b14713e666c0e7c1c606701cb44"
+    },
+    {
+      "name": "viewer_fit",
+      "title": "viewer_fit",
+      "summary": "把视图适配到整个模型。",
+      "description": "把视图适配到整个模型。",
+      "signature": "def viewer_fit()",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4474,
+      "sha256": "7b447f772fe18cba93afe86117684b889db16e184fc8858b184c187e09d5a211"
+    },
+    {
+      "name": "viewer_screenshot",
+      "title": "viewer_screenshot",
+      "summary": "截取当前 3D 视图保存为 PNG,返回路径。",
+      "description": "截取当前 3D 视图保存为 PNG,返回路径。",
+      "signature": "def viewer_screenshot(path: str='')",
+      "source": "D:\\CAE-AGENT-DSH\\tools\\cae_viewer_mcp\\mcp_server.py",
+      "line": 4480,
+      "sha256": "ad8985c9f0c2edd5da978cfd4a853acfa03f0ae924c277736ef2b33d7782c97b"
+    }
+  ]
+}

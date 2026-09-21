@@ -1,6 +1,8 @@
 param(
   [string]$DistPath = "$PSScriptRoot/release-candidate",
-  [string]$BuildPython = 'D:/知识库/work/rag-platform/venv/Scripts/python.exe'
+  [string]$BuildPython = 'D:/知识库/work/rag-platform/venv/Scripts/python.exe',
+  [string]$KnowledgeRuntimePath = "$PSScriptRoot/knowledge-dist/knowledge-worker",
+  [switch]$SkipRuntimeCopy
 )
 $ErrorActionPreference = 'Stop'
 $env:PYTHONDONTWRITEBYTECODE = '1'
@@ -18,6 +20,10 @@ try {
   & $BuildPython -m PyInstaller --noconfirm --onedir --windowed --name '知衡仿真知识库' --distpath $DistPath --workpath "$taskRoot/build/desktop" --specpath "$taskRoot/build" --add-data "$taskRoot/src/static;static" --hidden-import pypdf --hidden-import uvicorn.logging --hidden-import uvicorn.loops.auto --hidden-import uvicorn.protocols.http.auto --hidden-import uvicorn.protocols.websockets.auto --hidden-import uvicorn.lifespan.on --collect-data webview --exclude-module torch --exclude-module transformers --exclude-module sentence_transformers --exclude-module matplotlib --exclude-module pandas --exclude-module sklearn --exclude-module tkinter desktop.py *> "$taskRoot/evidence/build-desktop.log"
   if ($LASTEXITCODE -ne 0) { throw 'Desktop build failed; see evidence/build-desktop.log' }
 } finally { Pop-Location }
+if ($SkipRuntimeCopy) {
+  Write-Output "Desktop-only candidate: $target. Existing runtime components must be retained."
+  exit 0
+}
 if (Test-Path "$taskRoot/semantic-dist/semantic-worker/semantic-worker.exe") {
   if (-not (Test-Path "$target/semantic-runtime")) { Copy-Item "$taskRoot/semantic-dist/semantic-worker" "$target/semantic-runtime" -Recurse }
 }
@@ -27,8 +33,8 @@ if (Test-Path "$taskRoot/embedding-dist/embedding-worker/embedding-worker.exe") 
   robocopy "$taskRoot/../runtime/embedding-model" "$target/embedding-model" /E /XD .cache /XF *.download /NFL /NDL /NJH /NJS | Out-Null
   if ($LASTEXITCODE -ge 8) { throw 'Embedding model copy failed' }
 }
-if (Test-Path "$taskRoot/knowledge-dist/knowledge-worker/knowledge-worker.exe") {
-  robocopy "$taskRoot/knowledge-dist/knowledge-worker" "$target/knowledge-runtime" /E /NFL /NDL /NJH /NJS | Out-Null
+if (Test-Path "$KnowledgeRuntimePath/knowledge-worker.exe") {
+  robocopy $KnowledgeRuntimePath "$target/knowledge-runtime" /E /NFL /NDL /NJH /NJS | Out-Null
   if ($LASTEXITCODE -ge 8) { throw 'Knowledge runtime copy failed' }
-}
+} else { Write-Warning 'Knowledge runtime not copied. Supply -KnowledgeRuntimePath for a complete distribution.' }
 Write-Output "Candidate build: $target. Original EXE and business database were not replaced."

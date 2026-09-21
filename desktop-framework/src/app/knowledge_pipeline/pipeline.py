@@ -14,6 +14,8 @@ from .parsers import parse
 from .runtime import Runtime
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS answer_dependencies(run_id TEXT,file_id TEXT,file_hash TEXT,object_id TEXT,object_hash TEXT,PRIMARY KEY(run_id,file_id,object_id));
+CREATE TABLE IF NOT EXISTS kp_managed_jobs(job_id TEXT PRIMARY KEY,status TEXT,detail TEXT,updated TEXT);
 CREATE TABLE IF NOT EXISTS kp_jobs(
  id TEXT PRIMARY KEY,file_id TEXT,source_sha TEXT,owner_id TEXT,owner_hash TEXT,
  signature TEXT,status TEXT,error TEXT,report TEXT,created TEXT,updated TEXT,
@@ -52,6 +54,8 @@ class Pipeline:
         with core.connect() as c:
             c.executescript(SCHEMA)
             c.execute("UPDATE kp_jobs SET status='interrupted',error='上次处理被中断，可继续处理' WHERE status IN ('queued','running')")
+        from .. import change_queue
+        change_queue.install(core)
 
     def signature(self) -> str:
         state = self.runtime.status()
@@ -408,10 +412,7 @@ class Pipeline:
                 detail["graph"] = {"status": "unavailable", "message": str(getattr(exc, "detail", exc))}
             try:
                 state = self.core.EMBEDDINGS.call("/v2/status")
-                if state.get("status") == "ready":
-                    self.core.EMBEDDINGS.call("/v2/activate")
-                    state = self.core.EMBEDDINGS.status()
-                elif state.get("status") != "building":
+                if state.get("status") not in ("ready", "building"):
                     state = self.core.EMBEDDINGS.call("/v2/build")
                 detail["embedding"] = state
             except Exception as exc:
@@ -419,10 +420,20 @@ class Pipeline:
             ready = detail["graph"].get("status") == "consistent" and detail["embedding"].get("status") == "ready"
             status = "ready" if ready else "waiting_vectors" if detail["embedding"].get("status") == "building" else "blocked"
             with self.core.connect() as c:
+                c.execute('BEGIN IMMEDIATE')
                 revision = int(c.execute("SELECT value FROM meta WHERE key='revision'").fetchone()[0])
                 if revision != started:
                     status = "pending"
                     detail["message"] = "刷新期间主库已变化，将按新版本再次刷新"
+                elif ready:
+                    # Graph is versioned, FTS lives in this SQLite transaction. Publish
+                    # the vector pointer only after all components match this revision.
+                    activated = self.core.EMBEDDINGS.call('/v2/activate')
+                    if activated.get('status') != 'ready':
+                        raise ValueError('向量发布验证失败，保留上一发布记录')
+                    detail['embedding'] = activated
+                    from ..change_queue import publish
+                    publish(self.core, c, revision, detail)
                 c.execute("UPDATE kp_index_requests SET status=?,detail=?,updated=? WHERE revision<=? AND status!='ready'", (status, dumps(detail), self.core.now(), revision))
             return {"status": status, "revision": revision, **detail}
         finally:
@@ -430,14 +441,64 @@ class Pipeline:
 
     def maintenance(self):
         while not self.stop.wait(5):
-            with self.core.connect() as c:
-                pending = c.execute("SELECT 1 FROM kp_index_requests WHERE status IN ('pending','waiting_vectors') LIMIT 1").fetchone()
+            try:
+                self.manage_pending()
+            except Exception:
+                # A failed managed job must not stop unrelated index maintenance.
+                pass
+            from ..change_queue import enqueue
+            try:
+                enqueue(self.core)
+                with self.core.connect() as c:
+                    pending = c.execute("SELECT 1 FROM kp_index_requests WHERE status IN ('pending','waiting_vectors') LIMIT 1").fetchone()
+            except Exception:
+                # A transient database lock must not kill the durable queue consumer.
+                # The cursor was not advanced, so the next iteration resumes safely.
+                continue
             if pending:
                 try:
                     self.refresh_indexes()
                 except Exception as exc:
                     with self.core.connect() as c:
                         c.execute("UPDATE kp_index_requests SET status='blocked',detail=?,updated=? WHERE status IN ('pending','waiting_vectors')", (dumps({"error": str(exc)[:1000]}), self.core.now()))
+
+    def manage(self, job_id):
+        job = self.job(job_id)
+        with self.core.connect() as c:
+            c.execute("INSERT OR IGNORE INTO kp_managed_jobs VALUES(?,?,?,?)",
+                      (job_id, 'pending', '由后台 Agent 处理；自动校验只采纳为候选', self.core.now()))
+        return {**job, 'managed': True}
+
+    def manage_pending(self):
+        with self.core.connect() as c:
+            rows = c.execute("SELECT job_id FROM kp_managed_jobs WHERE status IN ('pending','waiting_model','processing') ORDER BY updated LIMIT 20").fetchall()
+        for row in rows:
+            job_id = row['job_id']
+            state, detail = 'processing', ''
+            try:
+                job = self.job(job_id)
+                if job['status'] in ('parsed', 'interrupted'):
+                    if not self.runtime.status().get('configured'):
+                        state, detail = 'waiting_model', '原文已保存；等待配置知识抽取模型'
+                    else:
+                        self.queue(job_id)
+                elif job['status'] == 'review_pending':
+                    # Automatic source checks never stand in for named human engineering review.
+                    if any(x['conflicts'] or x['provenance'].get('locator_ambiguous') for x in job['candidates']):
+                        state, detail = 'needs_attention', '存在冲突或出处歧义，已保留候选供 Agent 核查'
+                    else:
+                        ids = [x['id'] for x in job['candidates'] if x['status'] == 'pending']
+                        if ids:
+                            self.review(job_id, ids, [], 'AI / 来源校验', '后台核对原件哈希、逐字引文和引用端点；仅登记候选，不构成人工工程复核')
+                        state = 'complete'
+                elif job['status'] in ('reviewed', 'no_candidates'):
+                    state = 'complete'
+                elif job['status'] == 'failed':
+                    state, detail = 'needs_attention', job['error']
+            except Exception as exc:
+                state, detail = 'needs_attention', str(exc)[:1000]
+            with self.core.connect() as c:
+                c.execute('UPDATE kp_managed_jobs SET status=?,detail=?,updated=? WHERE job_id=?', (state, detail, self.core.now(), job_id))
 
     def status(self) -> dict:
         with self.core.connect() as c:

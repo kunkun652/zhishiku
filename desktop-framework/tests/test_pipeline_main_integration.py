@@ -19,6 +19,7 @@ class MainIntegrationTests(unittest.TestCase):
         pipeline.runtime = FixtureRuntime()
         core.EMBEDDINGS = UnavailableEmbeddings()
         cls.client = TestClient(app)
+        cls.client.headers['Authorization'] = 'Bearer ' + app.state.access.owner_token
         cls.job = pipeline.import_bytes(TEXT.encode(), 'main-integration.txt')
         cls.job = pipeline.process(cls.job['id'])
     @classmethod

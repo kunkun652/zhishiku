@@ -13,6 +13,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
+from contextlib import closing
 
 SPACE = tempfile.TemporaryDirectory(prefix='zh-pipeline-tests-')
 os.environ['ZH_DATA_ROOT'] = SPACE.name
@@ -25,7 +26,7 @@ from app.knowledge_pipeline.contracts import validate_extraction, validate_answe
 from app.knowledge_pipeline.parsers import parse
 
 SEED = Path(SPACE.name) / 'empty.sqlite3'
-with core.connect() as source, sqlite3.connect(SEED) as destination:
+with core.connect() as source, closing(sqlite3.connect(SEED)) as destination:
     source.backup(destination)
 TEXT = '机翼盒段采用铝合金。铝合金的弹性模量为70 GPa。'
 
@@ -84,7 +85,7 @@ class UnavailableEmbeddings:
 class PipelineTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix='zh-pipeline-case-')
-        core.ROOT = Path(self.temp.name)
+        core.ROOT = Path(self.temp.name).resolve()
         core.DB = core.ROOT / 'knowledge.sqlite3'
         shutil.copy2(SEED, core.DB)
         core.EMBEDDINGS = UnavailableEmbeddings()
@@ -196,7 +197,8 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(self.runtime.calls.count('extract'), 1)
     def test_14_no_fake_index_readiness(self):
         self.adopted()
-        state = self.pipeline.refresh_indexes()
+        with patch.object(core, 'semantica_rebuild', side_effect=RuntimeError('fixture: graph runtime unavailable')):
+            state = self.pipeline.refresh_indexes()
         self.assertEqual(state['status'], 'blocked')
         self.assertEqual(state['embedding']['status'], 'unavailable')
         self.assertEqual(state['graph']['status'], 'unavailable')

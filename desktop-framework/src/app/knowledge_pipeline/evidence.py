@@ -122,15 +122,25 @@ class EvidenceService:
         pack["hash"] = sha(dumps(pack))
         return pack
 
-    def ask(self, query: str, filters=None, top_k: int = 10) -> dict:
+    def ask(self, query: str, filters=None, top_k: int = 10, runtime=None) -> dict:
         pack = self.retrieve(query, filters=filters, top_k=top_k)
         run_id = uuid.uuid4().hex
         if not pack["evidence"]:
             result = {"status": "insufficient_evidence", "claims": [], "gaps": pack["gaps"]}
         else:
             try:
-                generated = self.pipeline.runtime.call("answer", {"query": query, "evidence_pack": pack})
+                generated = (runtime or self.pipeline.runtime).call("answer", {"query": query, "evidence_pack": pack})
                 checked = validate_answer({k: generated[k] for k in ("claims", "gaps")}, {e["id"] for e in pack["evidence"]})
+                if runtime and hasattr(runtime, 'review_claims') and checked['claims']:
+                    support = runtime.review_claims(checked['claims'], pack)
+                    accepted = []
+                    for index, claim in enumerate(checked['claims']):
+                        if support[str(index)] == 'supported':
+                            accepted.append({**claim, 'support': 'model_checked', 'support_note': '模型已核对原文支持性；不等同于工程复核'})
+                        else:
+                            checked['gaps'].append('有一条结论未获得完整原文支持，已隐藏，请直接核对引用。')
+                    checked['claims'] = accepted
+                    checked['validation'] = '引用及来源由程序核验；支持性由模型辅助核对，不是证明或工程审批'
                 with self.core.connect() as c:
                     current = int(c.execute("SELECT value FROM meta WHERE key='revision'").fetchone()[0])
                     if current != pack["revision"]:
@@ -146,4 +156,7 @@ class EvidenceService:
         with self.core.connect() as c:
             c.execute("INSERT INTO kp_agent_runs VALUES(?,?,?,?,?,?)", (run_id, query, result["status"], dumps(pack),
                       dumps({k: v for k, v in result.items() if k != "evidence_pack"}), self.core.now()))
+            for e in pack['evidence']:
+                c.execute('INSERT OR IGNORE INTO answer_dependencies VALUES(?,?,?,?,?)',
+                          (run_id, e['file_id'], e['file_hash'], e['source_object_id'], e['source_object_hash']))
         return result

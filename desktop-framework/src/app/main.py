@@ -248,7 +248,8 @@ def evidence(oid:str,page:int=0,offset:int=0):
 
 @app.get('/api/index-units')
 def index_units(object_id:str='',file_id:str='',offset:int=0,limit:int=30,key:str=''):
-    path=ROOT/'vectors-v2.sqlite3'
+    from index_generations import index_path
+    path=index_path(ROOT)
     if not path.exists():return {'items':[],'total':0,'message':'新分片索引尚未建立'}
     with closing(sqlite3.connect(path.as_uri()+'?mode=ro',uri=True)) as c:
         c.row_factory=sqlite3.Row
