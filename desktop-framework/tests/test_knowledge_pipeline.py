@@ -10,8 +10,8 @@ import shutil
 import sqlite3
 import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 import zipfile
 
 SPACE = tempfile.TemporaryDirectory(prefix='zh-pipeline-tests-')
@@ -88,12 +88,10 @@ class PipelineTests(unittest.TestCase):
         core.DB = core.ROOT / 'knowledge.sqlite3'
         shutil.copy2(SEED, core.DB)
         core.EMBEDDINGS = UnavailableEmbeddings()
-        self.original_quality = core.content_quality
         self.runtime = FixtureRuntime()
         self.pipeline = Pipeline(core, self.runtime)
     def tearDown(self):
         self.pipeline.close()
-        core.content_quality = self.original_quality
         self.temp.cleanup()
     def count(self, table):
         with core.connect() as c:
@@ -240,10 +238,11 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(EvidenceService(self.pipeline).ask('机翼盒段')['status'], 'model_unavailable_or_rejected')
     def test_21_noise_exclusion_blocks_review_and_answer(self):
         j = self.prepared()
-        core.content_quality = SimpleNamespace(eligible=lambda *args: False)
-        with self.assertRaises(ValueError):
-            self.pipeline.review(j['id'], [x['id'] for x in j['candidates']], [], 'r', 'check')
-        self.assertEqual(EvidenceService(self.pipeline).ask('机翼盒段')['status'], 'insufficient_evidence')
+        # Keep real filter_vectors/get/classify functions, replacing only the predicate.
+        with patch.object(core.content_quality, 'eligible', return_value=False):
+            with self.assertRaises(ValueError):
+                self.pipeline.review(j['id'], [x['id'] for x in j['candidates']], [], 'r', 'check')
+            self.assertEqual(EvidenceService(self.pipeline).ask('机翼盒段')['status'], 'insufficient_evidence')
     def test_22_changed_endpoint_blocks_old_relation(self):
         j = self.prepared()
         ids = [x['id'] for x in j['candidates'] if x['kind'] == 'entity']
